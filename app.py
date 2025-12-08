@@ -1,562 +1,448 @@
+# main.py
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Tuple
 import json
-from typing import List, Dict, Any
-
-import pandas as pd
-import streamlit as st
+import math
 import random
 
+import pandas as pd
 
-# ==========================
-# 0. НАСТРОЙКА СТРАНИЦЫ + CSS
-# ==========================
-
-st.set_page_config(
-    page_title="GENAI-4 · Автогенерация рекламы",
-    layout="wide"
-)
-
-st.markdown(
-    """
-    <style>
-    body {
-        background-color: #020617;
-        color: #e5e7eb;
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-    }
-    .main {
-        background: radial-gradient(circle at top left, #020617 0, #0f172a 40%, #020617 100%);
-        color: #e5e7eb;
-    }
-    .section-title {
-        font-size: 26px;
-        font-weight: 700;
-        margin-bottom: 6px;
-        background: linear-gradient(to right, #e5e7eb, #60a5fa);
-        -webkit-background-clip: text;
-        color: transparent;
-    }
-    .section-sub {
-        font-size: 13px;
-        color: #9ca3af;
-        margin-bottom: 18px;
-    }
-    .badge {
-        display: inline-block;
-        padding: 2px 10px;
-        border-radius: 999px;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: .08em;
-        background: rgba(56,189,248,0.1);
-        color: #38bdf8;
-        border: 1px solid rgba(56,189,248,0.4);
-        margin-right: 6px;
-    }
-    .badge-channel {
-        background: rgba(96,165,250,0.15);
-        color: #60a5fa;
-        border-color: rgba(96,165,250,0.5);
-    }
-    .top-summary {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 14px 22px;
-        border-radius: 999px;
-        background: #111827;
-        border: 1px solid rgba(148,163,184,0.7);
-        margin-bottom: 16px;
-        color: #e5e7eb;
-        font-size: 14px;
-    }
-    .top-summary strong {
-        color: #f9fafb;
-        font-weight: 700;
-    }
-    .campaign-card {
-        border-radius: 20px;
-        padding: 18px 20px;
-        margin-bottom: 16px;
-        background: radial-gradient(circle at top left, #111827 0, #020617 65%);
-        box-shadow: 0 18px 40px rgba(15,23,42,0.65);
-        border: 1px solid rgba(148,163,184,0.3);
-    }
-    .headline {
-        font-size: 17px;
-        font-weight: 650;
-        color: #e5e7eb;
-        margin-bottom: 4px;
-    }
-    .product-chip {
-        font-size: 12px;
-        color: #9ca3af;
-        margin-bottom: 8px;
-    }
-    .cta-chip {
-        display: inline-block;
-        margin-top: 8px;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: rgba(249,115,22,0.16);
-        color: #fdba74;
-        font-size: 12px;
-        border: 1px solid rgba(249,115,22,0.45);
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+from promt import LLMClient, MockLLMClient, AdVariant
 
 
 # ==========================
-# 1. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 1. МОДЕЛИ ДАННЫХ
 # ==========================
 
-def load_catalog(file) -> List[Dict[str, Any]]:
-    """Загрузка каталога из JSON или CSV в список словарей."""
+@dataclass
+class Product:
+    name: str
+    category: str
+    price: float
+    margin: Optional[float] = None
+    tags: Optional[List[str]] = None
+    description: str = ""
+
+
+@dataclass
+class ConsumerProfile:
+    id: str
+    age_range: str
+    interests: List[str]
+    behavior: List[str]
+    segment_label: str
+
+
+@dataclass
+class ScoredAd:
+    product: Product
+    channel: str
+    variant: AdVariant
+    avg_click_probability: float
+    avg_purchase_probability: float
+
+
+# ==========================
+# 2. ЗАГРУЗКА КАТАЛОГА
+# ==========================
+
+def load_catalog_from_filelike(file) -> List[Dict[str, Any]]:
+    """Streamlit: читает JSON или CSV, возвращает список dict-товаров."""
     name = file.name.lower()
     if name.endswith(".json"):
         data = json.load(file)
         if isinstance(data, dict) and "products" in data:
-            data = data["products"]
-        return data
-    else:
+            return data["products"]
+        if isinstance(data, list):
+            return data
+        raise ValueError("Неожиданный формат JSON: ожидается список или объект с ключом 'products'.")
+    elif name.endswith(".csv"):
         df = pd.read_csv(file)
         return df.to_dict(orient="records")
+    else:
+        raise ValueError("Поддерживаются только JSON и CSV.")
 
 
-def compute_margin_score(product: Dict[str, Any]) -> float:
-    price = float(product.get("price", 0) or 0)
-    market_cost = product.get("market_cost")
-    margin_field = product.get("margin")
+# ==========================
+# 3. СКОРИНГ ТОВАРОВ (ТОП-3)
+# ==========================
+
+def _safe_float(x, default: float = 0.0) -> float:
+    try:
+        if isinstance(x, str):
+            x = x.replace(" ", "").replace("₽", "").replace(",", ".")
+        return float(x)
+    except Exception:
+        return default
+
+
+def compute_margin_score(p: Dict[str, Any]) -> float:
+    """0..1 по марже."""
+    price = _safe_float(p.get("price", 0.0))
+    if price <= 0:
+        return 0.2
+
+    margin_field = p.get("margin")
+    market_cost = _safe_float(p.get("market_cost", 0.0))
 
     if isinstance(margin_field, (int, float)):
-        margin_percent = float(margin_field)
-    elif price > 0 and market_cost is not None:
-        margin_percent = (price - float(market_cost)) / price * 100
+        margin_pct = float(margin_field)
+    elif price > 0 and market_cost > 0:
+        margin_pct = (price - market_cost) / price * 100
     else:
-        margin_percent = 30.0  # дефолт
+        margin_pct = 30.0  # дефолт
 
-    return max(0.0, min(1.0, margin_percent / 80.0))
+    score = margin_pct / 80.0
+    return max(0.0, min(1.0, score))
 
 
-def compute_tag_score(product: Dict[str, Any]) -> float:
-    tags = product.get("tags") or []
+def compute_tag_score(p: Dict[str, Any]) -> float:
+    tags = p.get("tags") or []
     if isinstance(tags, str):
-        tags = [t.strip() for t in tags.split(",")]
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
 
-    text = " ".join(tags).lower()
+    tags_text = " ".join(tags).lower()
     score = 0.0
-    if any(k in text for k in ["новинка", "new", "2024"]):
+    if any(k in tags_text for k in ["новинка", "new", "2024", "2025"]):
         score += 0.3
-    if any(k in text for k in ["яркий", "bright", "цветной", "дизайн"]):
+    if any(k in tags_text for k in ["bestseller", "хит", "топ", "hit"]):
+        score += 0.3
+    if any(k in tags_text for k in ["яркий", "rgb", "подсветка", "стильный"]):
         score += 0.2
-    if any(k in text for k in ["bestseller", "хит", "hit", "топ"]):
-        score += 0.3
     return max(0.0, min(1.0, score))
 
 
-def compute_visual_score(product: Dict[str, Any]) -> float:
-    desc = str(product.get("description") or "") + " " + str(product.get("category") or "")
-    text = desc.lower()
+def compute_visual_score(p: Dict[str, Any]) -> float:
+    text = (str(p.get("description", "")) + " " + str(p.get("category", ""))).lower()
     score = 0.0
-    if any(k in text for k in ["rgb", "подсветка", "amoled", "красив", "дизайн"]):
+    if any(k in text for k in ["rgb", "подсветк", "amoled", "oled", "4k", "игров", "геймер"]):
         score += 0.4
-    if any(k in text for k in ["компакт", "минимализм", "тонкий"]):
+    if any(k in text for k in ["компактн", "тонкий", "минимализм"]):
         score += 0.2
     return max(0.0, min(1.0, score))
 
 
-def compute_product_ad_score(product: Dict[str, Any]) -> float:
-    m = compute_margin_score(product)
-    t = compute_tag_score(product)
-    v = compute_visual_score(product)
-    return round((m * 0.5 + t * 0.3 + v * 0.2), 3)
+def compute_product_ad_score(p: Dict[str, Any]) -> float:
+    m = compute_margin_score(p)
+    t = compute_tag_score(p)
+    v = compute_visual_score(p)
+    return round(m * 0.5 + t * 0.3 + v * 0.2, 4)
 
 
-def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Dict[str, Any]]:
-    scored = []
+def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Product]:
+    scored: List[Tuple[Dict[str, Any], float]] = []
     for p in catalog:
-        score = compute_product_ad_score(p)
-        scored.append({**p, "_ad_score": score})
-    scored_sorted = sorted(scored, key=lambda x: x["_ad_score"], reverse=True)
-    return scored_sorted[:k]
+        s = compute_product_ad_score(p)
+        scored.append((p, s))
+    scored_sorted = sorted(scored, key=lambda x: x[1], reverse=True)[:k]
 
-
-def build_trend_phrase(trends: List[str]) -> str:
-    if not trends:
-        return ""
-    return ", ".join(trends)
-
-
-# ==========================
-# 2. ГЕНЕРАЦИЯ ТЕКСТОВ ДЛЯ КАНАЛОВ
-# ==========================
-
-def generate_telegram_variants(product: Dict[str, Any], trends: List[str], n_variants: int = 1) -> List[Dict[str, str]]:
-    """Телега: коротко, эмоционально."""
-    name = product.get("name", "товар")
-    desc = product.get("description", "")
-    price = product.get("price")
-    tags = product.get("tags") or []
-    tags_text = ", ".join(tags) if isinstance(tags, list) else str(tags)
-
-    variants = []
-    for i in range(n_variants):
-        headline = random.choice([
-            f"{name} — забери, пока есть",
-            f"{name}: новинка для тебя",
-            f"{name} — техника без лишнего шума"
-        ])
-
-        base = f"{name} — {desc}" if desc else name
-        text_parts = [base]
-
-        if price:
-            text_parts.append(f"Сейчас около {int(price)} ₽.")
-        if "новинка" in tags_text.lower():
-            text_parts.append("Свежий релиз, пока мало у кого есть.")
-        if any(k in tags_text.lower() for k in ["bestseller", "хит", "hit"]):
-            text_parts.append("Уже стал хитом у покупателей.")
-        text_parts.append(random.choice([
-            "Успей, пока цена ещё держится 🔥",
-            "Пока есть в наличии — лучшее время забрать.",
-            "Количество ограничено, не откладывай."
-        ]))
-
-        text = " ".join(text_parts)
-        cta = random.choice(["Успеть взять сейчас", "Перейти к покупке"])
-
-        variants.append({
-            "channel": "telegram",
-            "headline": headline,
-            "text": text,
-            "cta": cta,
-            "notes": f"TG, {build_trend_phrase(trends)}"
-        })
-    return variants
-
-
-def generate_vk_variants(product: Dict[str, Any], trends: List[str], n_variants: int = 1) -> List[Dict[str, str]]:
-    """VK: больше текста, соцдоказательство."""
-    name = product.get("name", "товар")
-    desc = product.get("description", "")
-    price = product.get("price")
-    tags = product.get("tags") or []
-    tags_text = ", ".join(tags) if isinstance(tags, list) else str(tags)
-
-    variants = []
-    for _ in range(n_variants):
-        headline = random.choice([
-            f"{name}: техника, которая радует каждый день",
-            f"{name} — выбор тех, кто ценит качество",
-            f"{name} для дома и работы"
-        ])
-
-        text = f"{name} — для тех, кто хочет получать максимум от техники. {desc} "
-        if price:
-            text += f"Сейчас доступно примерно за {int(price)} ₽. "
-        if "bestseller" in tags_text.lower():
-            text += "Один из самых популярных товаров у наших клиентов. "
-        if "новинка" in tags_text.lower():
-            text += "Новая модель, которая только появилась в продаже. "
-        text += "Оформляйте заказ онлайн — доставка и гарантия включены."
-
-        variants.append({
-            "channel": "vk",
-            "headline": headline,
-            "text": text,
-            "cta": "Заказать онлайн",
-            "notes": f"VK, {build_trend_phrase(trends)}, соцдоказательство"
-        })
-    return variants
-
-
-def generate_yandex_variants(product: Dict[str, Any], trends: List[str], n_variants: int = 1) -> List[Dict[str, str]]:
-    """Yandex Ads: строго, коротко, без эмодзи."""
-    name = product.get("name", "товар")
-    desc = product.get("description", "")
-    price = product.get("price")
-
-    variants = []
-    for _ in range(n_variants):
-        headline = random.choice([
-            f"{name} со скидкой",
-            f"{name} — выгодная цена",
-            f"{name} с быстрой доставкой"
-        ])
-
-        text = desc or ""
-        if price:
-            if text:
-                text += " "
-            text += f"Цена около {int(price)} ₽. Быстрая доставка."
-
-        variants.append({
-            "channel": "yandex_ads",
-            "headline": headline,
-            "text": text.strip(),
-            "cta": "Купить онлайн",
-            "notes": f"Yandex Ads, {build_trend_phrase(trends)}, ключевые выгоды"
-        })
-    return variants
+    result: List[Product] = []
+    for p, s in scored_sorted:
+        result.append(
+            Product(
+                name=str(p.get("name", "Без названия")),
+                category=str(p.get("category", "электроника")),
+                price=_safe_float(p.get("price", 0.0)),
+                margin=_safe_float(p.get("margin", 0.0)),
+                tags=p.get("tags") if isinstance(p.get("tags"), list) else None,
+                description=str(p.get("description", "")),
+            )
+        )
+    return result
 
 
 # ==========================
-# 3. ВНУТРЕННИЙ СКОР ОБЪЯВЛЕНИЙ
+# 4. СИНТЕТИЧЕСКИЕ ИИ-ПРОФИЛИ
 # ==========================
 
-def score_ad_variant(ad: Dict[str, str], product: Dict[str, Any]) -> float:
+def generate_synthetic_consumers(n: int = 12) -> List[ConsumerProfile]:
+    """10+ профилей с разными паттернами поведения."""
+    base_profiles = [
+        ConsumerProfile(
+            id="disc_young",
+            age_range="18-24",
+            interests=["скидки", "маркетплейсы", "гаджеты"],
+            behavior=["реагирует на скидки", "часто покупает онлайн"],
+            segment_label="Молодой охотник за скидками",
+        ),
+        ConsumerProfile(
+            id="pragmatic_25_35",
+            age_range="25-35",
+            interests=["электроника", "работа из дома", "логистика"],
+            behavior=["ценит удобную доставку", "сравнивает цены"],
+            segment_label="Прагматичный офисный",
+        ),
+        ConsumerProfile(
+            id="eco_lover",
+            age_range="25-40",
+            interests=["экология", "долговечные вещи"],
+            behavior=["читает отзывы", "готов платить за качество"],
+            segment_label="Осознанный покупатель",
+        ),
+        ConsumerProfile(
+            id="gamer",
+            age_range="18-30",
+            interests=["игры", "геймерская периферия", "стримы"],
+            behavior=["реагирует на RGB/дизайн", "ценит отзывчивость"],
+            segment_label="Геймер",
+        ),
+        ConsumerProfile(
+            id="parent",
+            age_range="30-45",
+            interests=["товары для дома", "семья"],
+            behavior=["ценит надежность", "важна доставка"],
+            segment_label="Занятый родитель",
+        ),
+        ConsumerProfile(
+            id="minimalist",
+            age_range="20-35",
+            interests=["минимализм", "чистый дизайн"],
+            behavior=["не любит перегруженный текст"],
+            segment_label="Любитель минимализма",
+        ),
+    ]
+
+    # Если нужно больше n — просто дублируем с небольшим шумом
+    result = []
+    while len(result) < n:
+        for bp in base_profiles:
+            if len(result) >= n:
+                break
+            result.append(bp)
+    return result[:n]
+
+
+# ==========================
+# 5. СИМУЛЯЦИЯ ОЦЕНКИ ОБЪЯВЛЕНИЙ
+# ==========================
+
+def evaluate_ad_for_profile(text: str, profile: ConsumerProfile) -> Tuple[float, float]:
     """
-    Внутренний скор качества объявления: чем выше, тем "лучше".
-    Используется ТОЛЬКО для выбора лучших вариантов.
+    Псевдо-оценка вероятности клика/покупки
+    на основе кучи эвристик (FOMO, скидки, доставка, дизайн).
     """
-    text_all = (ad["headline"] + " " + ad["text"]).lower()
-
-    score = product.get("_ad_score", 0.5)  # базово — насколько товар хорош для рекламы
-
-    # FOMO
-    if any(k in text_all for k in ["успей", "пока есть", "только сегодня", "акция", "ограничено"]):
-        score += 0.15
-
+    t = text.lower()
+    click = 0.03  # базовый CTR
     # скидки
-    if "скид" in text_all or "со скидкой" in text_all:
-        score += 0.12
+    if "скидк" in t or "распродаж" in t:
+        click += 0.07
+        if "реагирует на скидки" in profile.behavior:
+            click += 0.08
+    # FOMO
+    if any(k in t for k in ["успей", "пока есть", "количество ограничено"]):
+        click += 0.05
+    # доставка
+    if "доставк" in t and "ценит удобную доставку" in profile.behavior:
+        click += 0.05
+    # геймеры и RGB
+    if any(k in t for k in ["игров", "геймер", "rgb", "подсветк"]):
+        if "игры" in profile.interests or "геймерская периферия" in profile.interests:
+            click += 0.06
+    # минимализм — штраф за «словесный мусор» (условно: “!!!”, куча эмодзи)
+    emoji_count = sum(1 for ch in t if ch in "🔥✨💥⭐😍👍👀💡")
+    if "минимализм" in profile.interests and emoji_count > 3:
+        click -= 0.03
 
-    # новинка / хит
-    if any(k in text_all for k in ["новинка", "новая модель", "свежий релиз"]):
-        score += 0.08
-    if any(k in text_all for k in ["хит продаж", "бестселлер", "выбор покупателей", "популярный товар"]):
-        score += 0.08
-
-    # канал
-    if ad["channel"] == "telegram":
-        score += 0.03
-    if ad["channel"] == "yandex_ads":
-        score += 0.04  # чуть выше, как перфоманс-канал
-
-    # маленький рандом, чтобы не было полного равенства
-    score += random.uniform(-0.01, 0.01)
-
-    return round(max(0.0, min(1.0, score)), 3)
-
-
-# ==========================
-# 4. ВЫБОР ЛУЧШЕГО ОБЪЯВЛЕНИЯ ДЛЯ КАЖДОГО КАНАЛА
-# ==========================
-
-def generate_best_for_channel(product: Dict[str, Any],
-                              trends: List[str],
-                              channel: str,
-                              reruns: int = 5) -> Dict[str, str]:
-    """
-    Для заданного товара и канала:
-    - генерируем reruns вариантов
-    - считаем скор
-    - возвращаем один лучший вариант
-    """
-    if channel == "telegram":
-        generator = generate_telegram_variants
-    elif channel == "vk":
-        generator = generate_vk_variants
-    elif channel == "yandex_ads":
-        generator = generate_yandex_variants
-    else:
-        raise ValueError(f"Неизвестный канал: {channel}")
-
-    best_variant = None
-    best_score = -1.0
-
-    for _ in range(reruns):
-        variant = generator(product, trends, n_variants=1)[0]
-        s = score_ad_variant(variant, product)
-        if s > best_score:
-            best_score = s
-            best_variant = {**variant}  # копия
-
-    best_variant["_internal_score"] = best_score
-    return best_variant
+    click = max(0.01, min(0.6, click))
+    purchase = click * random.uniform(0.6, 0.9)
+    return round(click, 4), round(purchase, 4)
 
 
-def generate_best_variants_for_product(product: Dict[str, Any],
-                                       trends: List[str],
-                                       reruns: int = 5) -> List[Dict[str, Any]]:
-    """
-    Для одного товара:
-    - Telegram: лучший из reruns
-    - VK: лучший из reruns
-    - Yandex Ads: лучший из reruns
-    => 3 объявления на 1 товар
-    """
-    best_tg = generate_best_for_channel(product, trends, "telegram", reruns)
-    best_vk = generate_best_for_channel(product, trends, "vk", reruns)
-    best_ya = generate_best_for_channel(product, trends, "yandex_ads", reruns)
-    return [best_tg, best_vk, best_ya]
+def evaluate_ad_on_audience(
+    variant: AdVariant,
+    product: Product,
+    consumers: List[ConsumerProfile],
+) -> Tuple[float, float]:
+    text = f"{variant.headline}\n{variant.text}\n{variant.cta}"
+    clicks = []
+    purchases = []
+    for c in consumers:
+        c_p, p_p = evaluate_ad_for_profile(text, c)
+        clicks.append(c_p)
+        purchases.append(p_p)
+    avg_click = sum(clicks) / len(clicks)
+    avg_purchase = sum(purchases) / len(purchases)
+    return round(avg_click, 4), round(avg_purchase, 4)
 
 
 # ==========================
-# 5. UI
+# 6. ГЕНЕРАЦИЯ КРЕАТИВОВ ДЛЯ ТОВАРА + КАНАЛА
 # ==========================
 
-# --- шапка ---
-st.markdown(
-    """
-    <div style="padding: 8px 0 18px 0;">
-      <div style="font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:#6b7280;">
-        GENAI-4 · Autonomous Marketing Agent
-      </div>
-      <div class="section-title">
-        Автоматическая генерация рекламных объявлений для интернет-магазина
-      </div>
-      <div class="section-sub">
-        Загрузите каталог товаров в JSON/CSV — система выберет 3 лучших товара и
-        сгенерирует креативы под Telegram, VK и Yandex Ads. Для каждого товара
-        для каждого канала генерируется по несколько вариантов, выбирается лучший.
-        Ниже показаны только два самых сильных примера, а полный набор доступен в JSON.
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# --- сайдбар ---
-st.sidebar.header("Входные параметры")
-
-niche = st.sidebar.text_input("Ниша / тип товаров", value="электроника")
-trends_input = st.sidebar.text_input(
-    "Активные маркетинговые тренды (через запятую)",
-    value="минимализм, честность, FOMO, социальное доказательство"
-)
-trends = [t.strip() for t in trends_input.split(",") if t.strip()]
-
-uploaded_file = st.sidebar.file_uploader(
-    "Каталог товаров (JSON или CSV)",
-    type=["json", "csv"]
-)
-
-if not uploaded_file:
-    st.info("⬅ Загрузите JSON/CSV с каталогом товаров, чтобы сгенерировать кампании.")
-    st.stop()
-
-# --- загрузка и анализ ---
-catalog = load_catalog(uploaded_file)
-if not catalog:
-    st.error("Не удалось прочитать каталог.")
-    st.stop()
-
-top_products = select_top_products(catalog, k=3)
-
-# генерируем ЛУЧШИЕ объявления для топ-товаров:
-# 3 товара × 3 канала = 9 объявлений
-all_variants: List[Dict[str, Any]] = []
-for product in top_products:
-    best_3_for_product = generate_best_variants_for_product(product, trends, reruns=5)
-    for v in best_3_for_product:
-        all_variants.append({
-            "product": product,
-            "ad": v,
-            "score": v.get("_internal_score", 0.0)
-        })
-
-# выбираем 2 лучших по внутреннему скору — для ПРИМЕРА
-best_two = sorted(all_variants, key=lambda x: x["score"], reverse=True)[:2]
-best_ids = {id(x) for x in best_two}
-
-# готовим JSON со ВСЕМИ 9 объявлениями
-campaigns_all = []
-for item in all_variants:
-    p = item["product"]
-    a = item["ad"]
-    is_sample = id(item) in best_ids
-    campaigns_all.append({
+def build_payload_for_llm(
+    product: Product,
+    channel: str,
+    trends: List[str],
+    audience_profile: Dict[str, Any],
+    n_variants: int = 3,
+) -> Dict[str, Any]:
+    return {
         "product": {
-            "name": p.get("name", ""),
-            "category": p.get("category", ""),
-            "price": p.get("price", None),
+            "name": product.name,
+            "category": product.category,
+            "price": product.price,
+            "margin": product.margin,
+            "tags": product.tags or [],
+            "features": [product.description],
         },
-        "channel": a["channel"],
-        "ad": {
-            "headline": a["headline"],
-            "text": a["text"],
-            "cta": a["cta"],
-            "notes": a["notes"],
-        },
-        "internal_score": item["score"],     # служебное поле
-        "is_sample_example": is_sample       # True для двух показанных в UI
-    })
+        "audience_profile": audience_profile,
+        "channel": channel,
+        "trends": trends,
+        "n_variants": n_variants,
+    }
 
-final_json = {
-    "platform": "GENAI-4",
-    "description": "Сгенерированные рекламные креативы по топ-товарам (3 товара × 3 канала = 9 объявлений).",
-    "niche": niche,
-    "n_products_in_catalog": len(catalog),
-    "n_top_products_used": len(top_products),
-    "n_all_ads": len(campaigns_all),
-    "n_example_ads_shown": len(best_two),
-    "campaigns": campaigns_all
-}
 
-# --- summary ---
-st.markdown(
-    f"""
-    <div class="top-summary">
-      <span class="badge">ГОТОВО</span>
-      На основе <strong>{final_json['n_products_in_catalog']}</strong> товаров выбрано 
-      <strong>{final_json['n_top_products_used']}</strong> лучших позиций и сгенерировано 
-      <strong>{final_json['n_all_ads']}</strong> объявлений (3 товара × 3 канала).
-      Ниже показаны только два примера, полный набор доступен в JSON.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+def generate_variants_for_product_channel(
+    llm_client,
+    product: Product,
+    channel: str,
+    trends: List[str],
+    n_variants: int = 3,
+) -> List[AdVariant]:
+    audience_profile = {
+        "age_range": "20-35",
+        "interests": ["электроника", "онлайн-покупки", "скидки"],
+        "behavior": ["реагирует на скидки", "ценит удобную доставку"],
+    }
+    payload = build_payload_for_llm(product, channel, trends, audience_profile, n_variants)
+    return llm_client.generate_variants(payload)
 
-# --- карточки двух лучших объявлений (пример креативов) ---
-channel_labels = {
-    "telegram": "Telegram",
-    "vk": "VK",
-    "yandex_ads": "Yandex Ads"
-}
 
-st.markdown(f"### ⭐ Примеры креативов (2 из {final_json['n_all_ads']})")
-
-for item in best_two:
-    p = item["product"]
-    a = item["ad"]
-    ch_label = channel_labels.get(a["channel"], a["channel"])
-
-    st.markdown(
-        f"""
-        <div class="campaign-card">
-          <div style="margin-bottom:6px;">
-            <span class="badge badge-channel">{ch_label}</span>
-            <span class="badge">{p.get('category', 'Без категории')}</span>
-          </div>
-          <div class="headline">{a['headline']}</div>
-          <div class="product-chip">
-            Товар: {p.get('name', 'Без названия')} · Примерная цена: {int(p.get('price', 0)) if p.get('price') else '—'} ₽
-          </div>
-          <div style="font-size:13px; color:#d1d5db;">
-            {a['text']}
-          </div>
-          <div class="cta-chip">CTA: {a['cta']}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def build_image_prompt(product: Product, channel: str, trends: List[str]) -> str:
+    """
+    Просто текстовое описание для генерации/подбора картинки.
+    Это заглушка вместо реального вызова DALL·E.
+    """
+    trend_text = ", ".join(trends) if trends else "современный минимализм"
+    return (
+        f"Рекламный баннер для товара '{product.name}' (категория: {product.category}) в стиле '{trend_text}'. "
+        f"Чистый фон, акцент на товаре, читаемый текст, формат под канал {channel}."
     )
 
-# --- JSON + скачивание ВСЕХ 9 реклам ---
-st.markdown("### 🧾 Полный JSON со всеми 9 сгенерированными объявлениями")
-st.caption(
-    "JSON включает по одному лучшему объявлению на каждый канал для каждого из трёх топ-товаров. "
-    "Поле `is_sample_example=true` отмечает два объявления, показанные выше как пример."
-)
 
-st.json(final_json)
+def build_scored_ads_for_product(
+    llm_client,
+    product: Product,
+    trends: List[str],
+    consumers: List[ConsumerProfile],
+    n_variants_per_channel: int = 3,
+) -> List[ScoredAd]:
+    channels = ["telegram", "vk", "yandex_ads"]
+    scored_ads: List[ScoredAd] = []
 
-st.download_button(
-    label="📥 Скачать JSON со всеми креативами",
-    file_name="genai4_all_ads.json",
-    mime="application/json",
-    data=json.dumps(final_json, ensure_ascii=False, indent=4),
-)
+    for ch in channels:
+        variants = generate_variants_for_product_channel(
+            llm_client=llm_client,
+            product=product,
+            channel=ch,
+            trends=trends,
+            n_variants=n_variants_per_channel,
+        )
+        for v in variants:
+            avg_click, avg_purchase = evaluate_ad_on_audience(v, product, consumers)
+            scored_ads.append(
+                ScoredAd(
+                    product=product,
+                    channel=ch,
+                    variant=v,
+                    avg_click_probability=avg_click,
+                    avg_purchase_probability=avg_purchase,
+                )
+            )
+    return scored_ads
+
+
+# ==========================
+# 7. ВЫБОР ЛУЧШИХ КРЕАТИВОВ И СБОРКА JSON
+# ==========================
+
+def pick_best_per_channel(scored_ads: List[ScoredAd]) -> List[ScoredAd]:
+    """
+    Для каждого канала берём креатив с максимальным avg_click_probability.
+    """
+    best_by_channel: Dict[str, ScoredAd] = {}
+    for ad in scored_ads:
+        ch = ad.channel
+        if ch not in best_by_channel:
+            best_by_channel[ch] = ad
+        else:
+            if ad.avg_click_probability > best_by_channel[ch].avg_click_probability:
+                best_by_channel[ch] = ad
+    return list(best_by_channel.values())
+
+
+def build_campaign_json(
+    niche: str,
+    catalog_size: int,
+    top_products: List[Product],
+    all_scored_ads: List[ScoredAd],
+    best_two: List[ScoredAd],
+    consumers: List[ConsumerProfile],
+) -> Dict[str, Any]:
+    consumer_dicts = [
+        {
+            "id": c.id,
+            "age_range": c.age_range,
+            "interests": c.interests,
+            "behavior": c.behavior,
+            "segment_label": c.segment_label,
+        }
+        for c in consumers
+    ]
+
+    # какие именно два примера показываем
+    best_ids = {id(ad) for ad in best_two}
+
+    campaigns = []
+    for ad in all_scored_ads:
+        image_prompt = build_image_prompt(ad.product, ad.channel, trends=[])
+        campaigns.append(
+            {
+                "product": {
+                    "name": ad.product.name,
+                    "category": ad.product.category,
+                    "price": ad.product.price,
+                },
+                "channel": ad.channel,
+                "ad": {
+                    "headline": ad.variant.headline,
+                    "text": ad.variant.text,
+                    "cta": ad.variant.cta,
+                    "notes": ad.variant.notes,
+                },
+                "evaluation": {
+                    "click_probability": ad.avg_click_probability,
+                    "purchase_probability": ad.avg_purchase_probability,
+                },
+                "targeting": {
+                    "audience_segment": "Synthetic multi-segment",
+                    "audience_profiles": consumer_dicts,
+                },
+                "image_prompt": image_prompt,
+                "is_sample_example": (id(ad) in best_ids),
+            }
+        )
+
+    final_json = {
+        "platform": "GENAI-4",
+        "description": "Автоматически сгенерированная рекламная кампания по топ-товарам.",
+        "niche": niche,
+        "n_products_in_catalog": catalog_size,
+        "n_top_products_used": len(top_products),
+        "n_all_ads": len(campaigns),
+        "n_example_ads_shown": len(best_two),
+        "campaigns": campaigns,
+    }
+    return final_json
+
+
+def get_llm_client():
+    """
+    Если есть OPENAI_API_KEY — используем реальный LLM.
+    Иначе — Mock для оффлайн-демо.
+    """
+    try:
+        return LLMClient()
+    except Exception:
+        return MockLLMClient()
