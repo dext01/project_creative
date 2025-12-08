@@ -1,53 +1,90 @@
+# promt.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import json
 import os
 
-from openai import OpenAI
-from main import evaluate_ad  # оценщик (клики / покупки)
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None  # на всякий случай, чтобы не падать, если lib не установлена
 
-
-# ==========================
-# 1. SYSTEM PROMPT
-# ==========================
 
 SYSTEM_PROMPT = """
 Ты — модуль генерации рекламных креативов для ИИ-платформы GENAI-4.
 Твоя задача — создавать эффективные рекламные тексты для интернет-магазина электроники,
 адаптированные под разные каналы (Telegram, VK, Yandex Ads).
-Отвечай строго JSON.
+
+Фокус: максимальная конверсия (клик / покупка).
+
+ОБЩИЕ ПРАВИЛА:
+- Пиши только на русском языке.
+- Не придумывай характеристик, которых нет в описании товара.
+- Подчеркивай выгоды и понятные пользователю результаты.
+- Учитывай тренды: минимализм, честность, FOMO, социальное доказательство, юмор (легкий).
+
+ФОРМАТ ВХОДА (один объект в JSON):
+{
+  "product": {
+    "name": "...",
+    "category": "...",
+    "price": 12345,
+    "margin": "высокая" или число или null,
+    "tags": ["новинка", "яркий", "bestseller"],
+    "features": ["описание", "характеристики"]
+  },
+  "audience_profile": {
+    "age_range": "18-30",
+    "interests": [...],
+    "behavior": [...]
+  },
+  "channel": "telegram" | "vk" | "yandex_ads",
+  "trends": ["минимализм", "FOMO", ...],
+  "n_variants": 3
+}
+
+ТВОЯ ЗАДАЧА:
+- сгенерировать n_variants объявлений для одного канала и одного товара.
+
+ТРЕБОВАНИЯ К КАНАЛАМ:
+
+[TELEGRAM]
+- Короткий, эмоциональный текст.
+- Заголовок до ~50 символов.
+- 1–3 предложения, можно эмодзи (до 5 шт).
+- FOMO приветствуется.
+- CTA: "Успеть взять сейчас", "Смотреть в каталоге", "Перейти к покупке".
+
+[VK]
+- 2–5 предложений, можно 1–2 абзаца.
+- Легкий сторителлинг, социальное доказательство ("покупатели выбирают", "отзывы").
+- CTA: "Заказать онлайн", "Узнать цену", "Смотреть характеристики".
+
+[Yandex Ads]
+- Сухо, конкретно, без эмодзи.
+- Короткий заголовок с выгодой.
+- 1–2 предложения, ключевые слова (доставка, скидка, купить онлайн).
+- CTA: "Купить онлайн", "Заказать с доставкой", "Смотреть в магазине".
+
+ФОРМАТ ВЫХОДА:
+Верни строго JSON:
+
+{
+  "variants": [
+    {
+      "channel": "<канал>",
+      "headline": "<заголовок>",
+      "text": "<основной текст>",
+      "cta": "<призыв>",
+      "notes": "<почему это должно конвертировать>"
+    },
+    ...
+  ]
+}
+
+Никакого текста вне JSON.
 """
-
-
-# ==========================
-# 2. DATA-MODEL
-# ==========================
-
-@dataclass
-class Product:
-    name: str
-    category: str
-    price: Optional[float] = None
-    margin: Optional[str] = None
-    tags: Optional[List[str]] = None
-    features: Optional[List[str]] = None
-
-
-@dataclass
-class AudienceProfile:
-    age_range: str
-    interests: List[str]
-    behavior: List[str]
-
-
-@dataclass
-class GenerationRequest:
-    product: Product
-    audience_profile: AudienceProfile
-    channel: str
-    trends: List[str]
-    n_variants: int = 1
 
 
 @dataclass
@@ -59,15 +96,16 @@ class AdVariant:
     notes: str
 
 
-# ==========================
-# 3. LLM CLIENT (SAFE)
-# ==========================
-
 class LLMClient:
+    """Клиент реального OpenAI API (chat.completions)."""
+
     def __init__(self, model: str = "gpt-4.1-mini"):
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("OPENAI_API_KEY не задан в переменных окружения!")
+            raise ValueError("OPENAI_API_KEY не задан в переменных окружения.")
+        if OpenAI is None:
+            raise ImportError("Библиотека openai не установлена. pip install openai")
+
         self.client = OpenAI(api_key=api_key)
         self.model = model
 
@@ -77,148 +115,65 @@ class LLMClient:
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
-            ]
+            ],
+            temperature=0.9,
         )
 
-        data = json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content
+        data = json.loads(content)
 
-        variants = []
+        variants: List[AdVariant] = []
         for v in data.get("variants", []):
-            variants.append(AdVariant(**v))
+            variants.append(
+                AdVariant(
+                    channel=v.get("channel", "").strip(),
+                    headline=v.get("headline", "").strip(),
+                    text=v.get("text", "").strip(),
+                    cta=v.get("cta", "").strip(),
+                    notes=v.get("notes", "").strip(),
+                )
+            )
         return variants
 
 
 class MockLLMClient:
+    """Заглушка, если нет ключа OpenAI: простые шаблонные тексты."""
+
+    def __init__(self):
+        pass
+
     def generate_variants(self, payload: Dict[str, Any]) -> List[AdVariant]:
-        p = payload["product"]
-        ch = payload["channel"]
+        product = payload["product"]
+        channel = payload["channel"]
+        name = product.get("name", "Товар")
+        features = product.get("features") or []
+        features_text = ", ".join([f for f in features if f]) or "отличные характеристики"
 
-        if ch == "telegram":
-            return [AdVariant(
+        if channel == "telegram":
+            base = AdVariant(
                 channel="telegram",
-                headline=f"{p['name']} — забери сейчас",
-                text=f"{p['name']} с выгодной ценой. Успей!",
-                cta="Успеть взять",
-                notes="Mock TG"
-            )]
-
-        if ch == "vk":
-            return [AdVariant(
+                headline=f"{name} — забери, пока есть",
+                text=f"{name} с {features_text}. Успей, пока цена ещё держится 🔥",
+                cta="Успеть взять сейчас",
+                notes="Mock: кратко, эмоции, FOMO.",
+            )
+        elif channel == "vk":
+            base = AdVariant(
                 channel="vk",
-                headline=f"{p['name']} для повседневного комфорта",
-                text=f"{p['name']} с отличным балансом цены и качества.",
+                headline=f"{name}: техника, которая радует каждый день",
+                text=(f"{name} — выбор тех, кто ценит комфорт и качество. "
+                      f"Особенности: {features_text}. Многие покупатели уже оценили этот вариант."),
                 cta="Заказать онлайн",
-                notes="Mock VK"
-            )]
+                notes="Mock: длиннее текст, соцдоказательство.",
+            )
+        else:
+            base = AdVariant(
+                channel="yandex_ads",
+                headline=f"{name} — выгодная цена",
+                text=f"{name} с {features_text}. Быстрая доставка, заказать онлайн.",
+                cta="Купить онлайн",
+                notes="Mock: сухо, по делу, под поиск.",
+            )
 
-        return [AdVariant(
-            channel="yandex_ads",
-            headline=f"{p['name']} со скидкой",
-            text=f"{p['name']} в наличии. Быстрая доставка.",
-            cta="Купить онлайн",
-            notes="Mock Yandex"
-        )]
-
-
-# ==========================
-# 4. GENERATOR
-# ==========================
-
-class AdGenerator:
-    def __init__(self, llm_client):
-        self.llm_client = llm_client
-
-    def generate(self, input_json: Dict[str, Any]) -> List[AdVariant]:
-        return self.llm_client.generate_variants(input_json)
-
-
-# ==========================
-# 5. OPTIMIZATION
-# ==========================
-
-def optimize_ad(generator, input_json, audience_segment):
-    best = None
-    best_score = -1
-
-    for _ in range(5):
-        variants = generator.generate(input_json)
-        for v in variants:
-            text = f"{v.headline}\n{v.text}\n{v.cta}"
-            score = evaluate_ad(text, audience_segment)["click_probability"]
-            if score > best_score:
-                best_score = score
-                best = (v, score)
-
-    return best
-
-
-# ==========================
-# 6. BUILD FINAL CAMPAIGN
-# ==========================
-
-def build_campaign(best_products_file="best_products.json",
-                   output="final_campaign.json",
-                   audience_segment="Low_income_pragmatic_youth"):
-
-    with open(best_products_file, "r", encoding="utf-8") as f:
-        best_products = json.load(f)
-
-    generator = AdGenerator(MockLLMClient())
-
-    audience_profile = {
-        "age_range": "20-35",
-        "interests": ["гаджеты", "онлайн-покупки", "скидки"],
-        "behavior": ["реагирует на скидки"]
-    }
-
-    campaigns = []
-
-    for product in best_products:
-        for channel in ["telegram", "vk", "yandex_ads"]:
-
-            input_json = {
-                "product": product,
-                "audience_profile": audience_profile,
-                "channel": channel,
-                "trends": ["минимализм", "FOMO"],
-                "n_variants": 3
-            }
-
-            best_variant, score = optimize_ad(generator, input_json, audience_segment)
-
-            campaigns.append({
-                "product": {
-                    "name": product["name"],
-                    "category": product["category"],
-                    "price": product.get("price")
-                },
-                "channel": channel,
-                "ad": {
-                    "headline": best_variant.headline,
-                    "text": best_variant.text,
-                    "cta": best_variant.cta,
-                    "notes": best_variant.notes
-                },
-                "evaluation": {
-                    "click_probability": score
-                }
-            })
-
-    final = {
-        "platform": "GENAI-4",
-        "description": "Финальная рекламная кампания",
-        "campaigns": campaigns
-    }
-
-    with open(output, "w", encoding="utf-8") as f:
-        json.dump(final, f, ensure_ascii=False, indent=4)
-
-    print("✅ Кампания создана:", output)
-
-
-# ==========================
-# 7. MAIN
-# ==========================
-
-if __name__ == "__main__":
-    build_campaign()
+        n = payload.get("n_variants", 1)
+        return [base for _ in range(n)]
