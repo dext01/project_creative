@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 .idea/
+.env
+.venv/
+__pycache__/
+*.pyc
