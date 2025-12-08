@@ -1,0 +1,200 @@
+[
+  {
+    "name": "Smartphone Ultra X1",
+    "category": "Смартфоны",
+    "description": "Флагман с AMOLED 120 Гц, тройной камерой 64 Мп и мощным аккумулятором.",
+    "price": 79990,
+    "market_cost": 42000,
+    "tags": ["новинка", "премиум", "яркий"]
+  },
+  {
+    "name": "Smartphone Nova Lite 8",
+    "category": "Смартфоны",
+    "description": "Лёгкий и быстрый смартфон с NFC и большой батареей.",
+    "price": 22990,
+    "market_cost": 11000,
+    "tags": ["бюджетный", "хит", "долго держит заряд"]
+  },
+  {
+    "name": "Smartphone Pixel Mini",
+    "category": "Смартфоны",
+    "description": "Компактный телефон с отличной камерой и чистой ОС.",
+    "price": 34990,
+    "market_cost": 18500,
+    "tags": ["компактный", "камера", "тренд"]
+  },
+  {
+    "name": "Smartphone GameMax R",
+    "category": "Смартфоны",
+    "description": "Игровой смартфон с охлаждением и экраном 144 Гц.",
+    "price": 55990,
+    "market_cost": 31000,
+    "tags": ["для игр", "премиум", "мощный"]
+  },
+  {
+    "name": "Smartphone Eco S3",
+    "category": "Смартфоны",
+    "description": "Телефон из переработанных материалов. Отличный выбор для экосознательных.",
+    "price": 25990,
+    "market_cost": 14000,
+    "tags": ["экологичный", "новинка"]
+  },
+
+  {
+    "name": "AirBuds Pro 3",
+    "category": "Наушники",
+    "description": "Беспроводные наушники с шумоподавлением и высоким качеством звука.",
+    "price": 18990,
+    "market_cost": 8500,
+    "tags": ["новинка", "бестселлер", "спорт"]
+  },
+  {
+    "name": "BassMax Studio",
+    "category": "Наушники",
+    "description": "Полноразмерные наушники для музыкантов и аудиофилов.",
+    "price": 24990,
+    "market_cost": 12000,
+    "tags": ["премиум", "студийные", "мощный звук"]
+  },
+  {
+    "name": "AirBuds Lite",
+    "category": "Наушники",
+    "description": "Лёгкие и удобные TWS-наушники на каждый день.",
+    "price": 4990,
+    "market_cost": 2500,
+    "tags": ["бюджетный", "хит", "повседневные"]
+  },
+  {
+    "name": "SportBeats X",
+    "category": "Наушники",
+    "description": "Спортивные наушники с влагозащитой и крепкой фиксацией.",
+    "price": 7990,
+    "market_cost": 3900,
+    "tags": ["спорт", "водостойкие"]
+  },
+
+  {
+    "name": "Tablet VisionPad 11",
+    "category": "Планшеты",
+    "description": "Большой экран 11 дюймов, подходит для фильмов и работы.",
+    "price": 32990,
+    "market_cost": 17500,
+    "tags": ["новинка", "универсальный"]
+  },
+  {
+    "name": "Tablet StudyGo 9",
+    "category": "Планшеты",
+    "description": "Учебный планшет для детей и студентов.",
+    "price": 15990,
+    "market_cost": 7000,
+    "tags": ["для учебы", "бюджетный"]
+  },
+  {
+    "name": "Tablet ProArtist 12",
+    "category": "Планшеты",
+    "description": "Планшет для художников с чувствительным стилусом.",
+    "price": 49990,
+    "market_cost": 28500,
+    "tags": ["премиум", "для творчества"]
+  },
+
+  {
+    "name": "Laptop FlexBook 15",
+    "category": "Ноутбуки",
+    "description": "Универсальный ноутбук для работы и дома с 16 ГБ RAM.",
+    "price": 58990,
+    "market_cost": 35000,
+    "tags": ["универсальный", "хит"]
+  },
+  {
+    "name": "Laptop GamePro G7",
+    "category": "Ноутбуки",
+    "description": "Игровой ноутбук с RTX-видеокартой.",
+    "price": 129990,
+    "market_cost": 82000,
+    "tags": ["для игр", "премиум", "мощный"]
+  },
+  {
+    "name": "Laptop UltraLite 14",
+    "category": "Ноутбуки",
+    "description": "Лёгкий ультрабук с большим временем автономной работы.",
+    "price": 79990,
+    "market_cost": 46000,
+    "tags": ["премиум", "компактный"]
+  },
+
+  {
+    "name": "SmartWatch Pro S",
+    "category": "Умные часы",
+    "description": "Многофункциональные часы с датчиками здоровья и GPS.",
+    "price": 22990,
+    "market_cost": 11000,
+    "tags": ["спорт", "новинка"]
+  },
+  {
+    "name": "SmartWatch Fit Lite",
+    "category": "Умные часы",
+    "description": "Бюджетные часы с шагомером и пульсометром.",
+    "price": 5990,
+    "market_cost": 2800,
+    "tags": ["бюджетный", "для фитнеса"]
+  },
+  {
+    "name": "SmartWatch Titanium X",
+    "category": "Умные часы",
+    "description": "Флагманские часы в титановом корпусе.",
+    "price": 32990,
+    "market_cost": 18000,
+    "tags": ["премиум", "новинка", "яркий"]
+  },
+
+  {
+    "name": "GameConsole MiniBox",
+    "category": "Гейминг",
+    "description": "Компактная игровая консоль для казуального гейминга.",
+    "price": 14990,
+    "market_cost": 8500,
+    "tags": ["для игр", "хит"]
+  },
+  {
+    "name": "GameConsole X-Prime",
+    "category": "Гейминг",
+    "description": "Продвинутая консоль с поддержкой 4K.",
+    "price": 54990,
+    "market_cost": 31000,
+    "tags": ["премиум", "мощный"]
+  },
+  {
+    "name": "VR Headset VRX 2",
+    "category": "Гейминг",
+    "description": "Шлем виртуальной реальности нового поколения.",
+    "price": 39990,
+    "market_cost": 21000,
+    "tags": ["новинка", "тренд", "VR"]
+  },
+
+  {
+    "name": "Speaker BoomSound 40",
+    "category": "Колонки",
+    "description": "Мощная портативная колонка для вечеринок.",
+    "price": 14990,
+    "market_cost": 7000,
+    "tags": ["мощный", "яркий"]
+  },
+  {
+    "name": "Speaker HomeTheater S",
+    "category": "Колонки",
+    "description": "Саундбар для телевизора с глубоким басом.",
+    "price": 22990,
+    "market_cost": 12000,
+    "tags": ["домашний кинотеатр", "премиум"]
+  },
+  {
+    "name": "Speaker MiniTune",
+    "category": "Колонки",
+    "description": "Мини-колонка с чистым звуком и большим аккумулятором.",
+    "price": 4990,
+    "market_cost": 2500,
+    "tags": ["бюджетный", "повседневный"]
+  }
+]
