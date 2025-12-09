@@ -1,4 +1,14 @@
 from __future__ import annotations
+# ... другие импорты ...
+import os # <-- Добавьте это, если еще не добавили
+import pandas as pd
+import streamlit as st 
+from sentence_transformers import SentenceTransformer, util # <-- ЭТО КРИТИЧЕСКИ ВАЖНО
+
+# Убедитесь, что тут MistralClient
+from promt import MistralClient, MockLLMClient, AdVariant
+
+from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 import json
