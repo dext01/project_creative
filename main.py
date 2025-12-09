@@ -1,30 +1,24 @@
+# =================================================================
+# 1. СТРОКА С __FUTURE__ ДОЛЖНА БЫТЬ ПЕРВОЙ НЕСЛУЖЕБНОЙ СТРОКОЙ!
 from __future__ import annotations
-# ... другие импорты ...
-import os # <-- Добавьте это, если еще не добавили
+# =================================================================
+
+import os
 import pandas as pd
-import streamlit as st 
-from sentence_transformers import SentenceTransformer, util # <-- ЭТО КРИТИЧЕСКИ ВАЖНО
-
-# Убедитесь, что тут MistralClient
-from promt import MistralClient, MockLLMClient, AdVariant
-
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Tuple
+import streamlit as st
 import json
 import math
 import random
-import os  # Обязательно для чтения переменных окружения
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Tuple
 
-import pandas as pd
-import streamlit as st  # <--- ДОБАВЛЕНО/ИСПРАВЛЕНО
-from sentence_transformers import SentenceTransformer, util # <--- ДОБАВЛЕНО/ИСПРАВЛЕНО
-
-# Убедитесь, что вы импортируете MistralClient, а не старый LLMClient
+# Импорты, которые вы указали:
+from sentence_transformers import SentenceTransformer, util
 from promt import MistralClient, MockLLMClient, AdVariant
 
+
 # ==========================
-# 1. МОДЕЛИ ДАННЫХ
+# 2. МОДЕЛИ ДАННЫХ
 # ==========================
 
 @dataclass
@@ -58,7 +52,7 @@ class ScoredAd:
 
 
 # ==========================
-# 2. ЗАГРУЗКА КАТАЛОГА
+# 3. ЗАГРУЗКА КАТАЛОГА
 # ==========================
 
 def load_catalog_from_filelike(file) -> List[Dict[str, Any]]:
@@ -82,7 +76,7 @@ def load_catalog_from_filelike(file) -> List[Dict[str, Any]]:
 
 
 # ==========================
-# 3. СКОРИНГ ТОВАРОВ (Адаптировано из productAnalyzer.py для синхронной работы)
+# 4. СКОРИНГ ТОВАРОВ (Адаптировано из productAnalyzer.py для синхронной работы)
 # ==========================
 
 # Инициализируем SentenceTransformer один раз
@@ -100,15 +94,15 @@ def get_scoring_embeddings(model):
             ["query: яркий красочный насыщенный неоновый броский дизайн визуально привлекательный"],
             convert_to_tensor=True),
         'visual_neg': model.encode(["query: тусклый серый блеклый простой стандартный обычный скучный матовый"],
-                                   convert_to_tensor=True),
+                                     convert_to_tensor=True),
         'novelty_pos': model.encode(["query: новинка новый релиз последняя модель 2024 современный инновация тренд"],
-                                    convert_to_tensor=True),
+                                     convert_to_tensor=True),
         'novelty_neg': model.encode(["query: старый антиквариат устаревший ретро винтаж прошлый век история"],
-                                    convert_to_tensor=True),
+                                     convert_to_tensor=True),
         'hype_pos': model.encode(["query: бестселлер хит продаж топ популярный выбор покупателей высокий рейтинг"],
-                                 convert_to_tensor=True),
+                                     convert_to_tensor=True),
         'hype_neg': model.encode(["query: средний неизвестный нишевый базовый запасная часть обыденный"],
-                                 convert_to_tensor=True),
+                                     convert_to_tensor=True),
     }
 
 
@@ -126,8 +120,6 @@ def _get_semantic_score(embedding: Any, pos: Any, neg: Any) -> float:
 def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Product]:
     """
     Выбирает топ-K товаров на основе комплексного скоринга.
-    ВНИМАНИЕ: Здесь отсутствует вызов Yandex API, т.к. Streamlit синхронен.
-    Скор тренда имитируется/отсутствует.
     """
     processed = []
 
@@ -136,10 +128,10 @@ def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Produ
         desc_emb = MODEL.encode(f"passage: {p['name']}. {p.get('description', '')}", convert_to_tensor=True)
 
         m_score = (
-                          _get_semantic_score(desc_emb, EMBEDDINGS['visual_pos'], EMBEDDINGS['visual_neg']) +
-                          _get_semantic_score(desc_emb, EMBEDDINGS['novelty_pos'], EMBEDDINGS['novelty_neg']) +
-                          _get_semantic_score(desc_emb, EMBEDDINGS['hype_pos'], EMBEDDINGS['hype_neg'])
-                  ) / 3
+                             _get_semantic_score(desc_emb, EMBEDDINGS['visual_pos'], EMBEDDINGS['visual_neg']) +
+                             _get_semantic_score(desc_emb, EMBEDDINGS['novelty_pos'], EMBEDDINGS['novelty_neg']) +
+                             _get_semantic_score(desc_emb, EMBEDDINGS['hype_pos'], EMBEDDINGS['hype_neg'])
+                    ) / 3
 
         # 2. Маржинальность
         margin = 0
@@ -147,8 +139,6 @@ def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Produ
             margin = ((p['price'] - p['market_cost']) / p['price']) * 100
 
         # 3. Trend (имитация или заглушка, т.к. нет Wordstat API)
-        # Если в товаре уже есть поле '_temp_trend' (например, если он был предварительно проанализирован)
-        # ИЛИ просто используем константу/случайное число для имитации тренда в Streamlit-демо
         trend_score = random.uniform(5.0, 15.0)
 
         # Финальный взвешенный счет (аналогично формуле в productAnalyzer.py)
@@ -182,13 +172,29 @@ def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Produ
 
 
 # ==========================
-# 4. ГЕНЕРАЦИЯ АУДИТОРИИ
+# 5. ГЕНЕРАЦИЯ АУДИТОРИИ (НУЖНО ДОБАВИТЬ КОД, КОТОРЫЙ ВЫ НЕ ПРИСЛАЛИ)
 # ==========================
 
-# ... (Остальная часть main.py остается прежней, включая generate_synthetic_consumers, evaluate_ad_for_profile и т.д.)
+# !!! ВАЖНО: Функции generate_synthetic_consumers и др. должны быть здесь.
+# Так как вы не прислали их код, я оставляю заглушки, чтобы избежать ImportError.
+
+def generate_synthetic_consumers() -> List[ConsumerProfile]:
+    """Заглушка для функции генерации аудитории."""
+    # Замените это на ваш реальный код
+    return [
+        ConsumerProfile(
+            id="C1",
+            age_range="25-35",
+            interests=["технологии", "спорт"],
+            behavior=["часто покупает онлайн"],
+            segment_label="Ранний последователь"
+        )
+    ]
+
+# ... другие функции (evaluate_ad_for_profile, build_scored_ads_for_product, build_campaign_json) ...
 
 # ==========================
-# 5. КЛИЕНТ LLM
+# 6. КЛИЕНТ LLM
 # ==========================
 
 def get_llm_client():
@@ -206,5 +212,67 @@ def get_llm_client():
         print(f"Ошибка инициализации MistralClient: {e}. Используется MockLLMClient.")
         return MockLLMClient()
 
-# (Оставшаяся часть main.py, включая build_scored_ads_for_product, pick_best_per_channel, build_campaign_json,
-# остается без изменений, кроме использования MistralClient вместо LLMClient в get_llm_client)
+
+# ==========================
+# 7. ДРУГИЕ ФУНКЦИИ (ЗАГЛУШКИ)
+# ==========================
+
+# Если у вас есть другие функции, которые импортируются в app.py (например, build_campaign_json),
+# вы должны убедиться, что они определены здесь.
+
+def evaluate_ad_for_profile(ad_variant: AdVariant, profile: ConsumerProfile) -> Tuple[float, float]:
+    """Заглушка: имитация оценки вероятности клика и покупки."""
+    # Замените на вашу реальную логику
+    base_click = 0.05
+    base_purchase = 0.01
+
+    if "новизна" in ad_variant.ad_text:
+        base_click += 0.02
+    if profile.age_range == "25-35":
+        base_purchase += 0.01
+
+    return base_click, base_purchase
+
+def build_scored_ads_for_product(product: Product) -> List[ScoredAd]:
+    """Заглушка: генерирует оцененные варианты объявлений."""
+    # Здесь должен быть вызов LLM для генерации вариантов, а затем их оценка.
+    # Для целей исправления ошибки импорта, просто возвращаем заглушку.
+    mock_variant = AdVariant(
+        title="Демо-Заголовок",
+        body="Демо-Текст объявления.",
+        keywords=["демо", product.name]
+    )
+    click, purchase = evaluate_ad_for_profile(mock_variant, generate_synthetic_consumers()[0])
+
+    return [
+        ScoredAd(
+            product=product,
+            channel="social_media",
+            variant=mock_variant,
+            avg_click_probability=click,
+            avg_purchase_probability=purchase
+        )
+    ]
+
+def pick_best_per_channel(scored_ads: List[ScoredAd]) -> Dict[str, ScoredAd]:
+    """Заглушка: выбирает лучшее объявление для каждого канала."""
+    best = {}
+    for ad in scored_ads:
+        if ad.channel not in best or ad.avg_purchase_probability > best[ad.channel].avg_purchase_probability:
+            best[ad.channel] = ad
+    return best
+
+def build_campaign_json(best_ads: Dict[str, ScoredAd]) -> Dict[str, Any]:
+    """Заглушка: создает финальный JSON кампании."""
+    return {
+        "campaign_name": "Demo_Campaign",
+        "best_ads": {
+            channel: {
+                "product_name": ad.product.name,
+                "ad_title": ad.variant.title,
+                "ad_body": ad.variant.body,
+                "score": f"{ad.avg_purchase_probability:.4f}"
+            }
+            for channel, ad in best_ads.items()
+        }
+    }
