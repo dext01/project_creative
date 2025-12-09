@@ -70,11 +70,18 @@ project_creative/
 ├── requirements.txt
 └── README.md
 ```
-## Установка
+## ⚙️ Установка
 ```
 git clone https://github.com/dext01/project_creative.git
 cd project_creative
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+## 🔑 Настройка API
+
+Добавить переменные среды:
+```
+export MISTRAL_API_KEY="твoй_ключ"
+export YANDEX_OAUTH_TOKEN="твой_ключ"
 ```
