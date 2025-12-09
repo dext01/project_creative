@@ -85,3 +85,4 @@ pip install -r requirements.txt
 export MISTRAL_API_KEY="твoй_ключ"
 export YANDEX_OAUTH_TOKEN="твой_ключ"
 ```
+### 📈 Что делает система пошагово
