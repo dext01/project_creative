@@ -1,5 +1,7 @@
 streamlit
 pandas
-openai
-numpy
 scikit-learn
+numpy
+requests
+httpx
+sentence-transformers
