@@ -98,3 +98,18 @@ project_creative/
 ├── 📄 requirements.txt    # Зависимости
 └── 📄 README.md           # Документация
 ```
+## 🚀 Быстрый старт
+
+### 1. Клонирование
+```bash
+git clone [https://github.com/dext01/project_creative.git](https://github.com/dext01/project_creative.git)
+cd project_creative
+```
+### 2. Окружение
+```bash
+python -m venv .venv
+# Для Windows:
+.venv\Scripts\activate
+# Для Mac/Linux:
+source .venv/bin/activate
+```
