@@ -1,17 +1,14 @@
-# main.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 import json
 import math
 import random
-import os
 
 import pandas as pd
-from sentence_transformers import SentenceTransformer, util  # Добавлен для семантического скоринга
+import streamlit as st  # <--- ДОБАВИТЬ ЭТУ СТРОКУ!
 
-from promt import MistralClient, MockLLMClient, AdVariant  # Изменен импорт с LLMClient на MistralClient
-
+from promt import MistralClient, MockLLMClient, AdVariant 
 
 # ==========================
 # 1. МОДЕЛИ ДАННЫХ
