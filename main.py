@@ -1,278 +1,468 @@
-# =================================================================
-# 1. СТРОКА С __FUTURE__ ДОЛЖНА БЫТЬ ПЕРВОЙ НЕСЛУЖЕБНОЙ СТРОКОЙ!
-from __future__ import annotations
-# =================================================================
-
-import os
-import pandas as pd
-import streamlit as st
 import json
-import math
 import random
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional, Tuple
 
-# Импорты, которые вы указали:
-from sentence_transformers import SentenceTransformer, util
+import pandas as pd
+
 from promt import MistralClient, MockLLMClient, AdVariant
 
 
 # ==========================
-# 2. МОДЕЛИ ДАННЫХ
+# 0. ЗАГРУЗКА КАТАЛОГА + СКОРИНГ ТОВАРОВ
+# ==========================
+
+
+def load_catalog_from_filelike(file_like) -> List[Dict[str, Any]]:
+    """
+    Загрузка каталога из JSON/CSV в список словарей.
+    Поддерживает формат:
+    - [ {product...}, ... ]
+    - { "products": [ ... ] }
+    """
+    name = getattr(file_like, "name", "").lower()
+    if name.endswith(".json"):
+        data = json.load(file_like)
+        if isinstance(data, dict) and "products" in data:
+            data = data["products"]
+        return data
+    else:
+        df = pd.read_csv(file_like)
+        return df.to_dict(orient="records")
+
+
+def _compute_margin_score(product: Dict[str, Any]) -> float:
+    price = float(product.get("price", 0) or 0)
+    market_cost = product.get("market_cost")
+    margin_field = product.get("margin")
+
+    if isinstance(margin_field, (int, float)):
+        margin_percent = float(margin_field)
+    elif price > 0 and market_cost is not None:
+        margin_percent = (price - float(market_cost)) / price * 100
+    else:
+        margin_percent = 30.0
+
+    return max(0.0, min(1.0, margin_percent / 80.0))
+
+
+def _compute_tag_score(product: Dict[str, Any]) -> float:
+    tags = product.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+
+    text = " ".join(tags).lower()
+    score = 0.0
+    if any(k in text for k in ["новинка", "new", "2024"]):
+        score += 0.3
+    if any(k in text for k in ["яркий", "bright", "цветной", "дизайн"]):
+        score += 0.2
+    if any(k in text for k in ["bestseller", "хит", "hit", "топ"]):
+        score += 0.3
+    return max(0.0, min(1.0, score))
+
+
+def _compute_visual_score(product: Dict[str, Any]) -> float:
+    desc = str(product.get("description") or "") + " " + str(product.get("category") or "")
+    text = desc.lower()
+    score = 0.0
+    if any(k in text for k in ["rgb", "подсветка", "amoled", "красив", "дизайн"]):
+        score += 0.4
+    if any(k in text for k in ["компакт", "минимализм", "тонкий"]):
+        score += 0.2
+    return max(0.0, min(1.0, score))
+
+
+def compute_product_ad_score(product: Dict[str, Any]) -> float:
+    """
+    Хитрая, но быстрая эвристика "насколько товар хорош для рекламы":
+    комбинация маржи, тегов и визуальной привлекательности.
+    """
+    m = _compute_margin_score(product)
+    t = _compute_tag_score(product)
+    v = _compute_visual_score(product)
+    return round((m * 0.5 + t * 0.3 + v * 0.2), 3)
+
+
+def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Dict[str, Any]]:
+    """
+    Выбирает k лучших товаров по внутреннему рекламному скору.
+    """
+    scored = []
+    for p in catalog:
+        score = compute_product_ad_score(p)
+        scored.append({**p, "_ad_score": score})
+    scored_sorted = sorted(scored, key=lambda x: x["_ad_score"], reverse=True)
+    return scored_sorted[:k]
+
+
+# ==========================
+# 1. СИНТЕТИЧЕСКИЕ ИИ-ПОТРЕБИТЕЛИ
 # ==========================
 
 @dataclass
-class Product:
-    name: str
-    category: str
-    price: float
-    margin: Optional[float] = None
-    tags: Optional[List[str]] = None
-    description: str = ""
-    # Добавлен атрибут для рекомендации, чтобы использовать его в LLM
-    recommendation: Optional[str] = None
-
-
-@dataclass
-class ConsumerProfile:
-    id: str
-    age_range: str
+class SyntheticConsumer:
+    id: int
+    age: int
     interests: List[str]
     behavior: List[str]
-    segment_label: str
+    segment: str
+    price_sensitivity: float  # 0..1
 
 
-@dataclass
-class ScoredAd:
-    product: Product
-    channel: str
-    variant: AdVariant
-    avg_click_probability: float
-    avg_purchase_probability: float
+def generate_synthetic_consumers(n: int = 12) -> List[Dict[str, Any]]:
+    """
+    Генерирует n профилей "ИИ-потребителей":
+    - возраст
+    - интересы
+    - поведенческие паттерны
+    - сегмент (строка для базовой оценки)
+    """
+    random.seed(42)
+
+    interests_pool = [
+        "гаджеты", "игры", "спорт", "музыка", "кино",
+        "онлайн-покупки", "скидки", "мода", "умный дом", "путешествия"
+    ]
+    behavior_pool = [
+        "реагирует на скидки",
+        "ценит качество",
+        "ищет баланс цены и характеристик",
+        "любит новинки",
+        "доверяет отзывам",
+        "берёт по акции"
+    ]
+    segments = [
+        "Low_income_pragmatic_youth",
+        "Middle_income_tech_enthusiast",
+        "Family_buyer_value_seeker",
+        "Premium_quality_oriented"
+    ]
+
+    consumers: List[SyntheticConsumer] = []
+    for i in range(n):
+        age = random.randint(18, 45)
+        seg = random.choice(segments)
+        interests = random.sample(interests_pool, k=3)
+        behavior = random.sample(behavior_pool, k=2)
+        price_sensitivity = {
+            "Low_income_pragmatic_youth": 0.9,
+            "Family_buyer_value_seeker": 0.8,
+            "Middle_income_tech_enthusiast": 0.6,
+            "Premium_quality_oriented": 0.4,
+        }[seg]
+
+        consumers.append(
+            SyntheticConsumer(
+                id=i + 1,
+                age=age,
+                interests=interests,
+                behavior=behavior,
+                segment=seg,
+                price_sensitivity=price_sensitivity,
+            )
+        )
+
+    return [asdict(c) for c in consumers]
 
 
 # ==========================
-# 3. ЗАГРУЗКА КАТАЛОГА
+# 2. БАЗОВАЯ ОЦЕНКА ОБЪЯВЛЕНИЯ (из твоего старого main.py)
 # ==========================
 
-def load_catalog_from_filelike(file) -> List[Dict[str, Any]]:
-    """Streamlit: читает JSON или CSV, возвращает список dict-товаров."""
-    name = file.name.lower()
-    if name.endswith(".json"):
-        data = json.load(file)
-        if isinstance(data, dict) and "products" in data:
-            return data["products"]
-        if isinstance(data, list):
-            return data
-        raise ValueError("Неожиданный формат JSON: ожидается список или объект с ключом 'products'.")
-    elif name.endswith((".csv", ".tsv", ".txt")):
-        try:
-            df = pd.read_csv(file)
-            return df.to_dict(orient="records")
-        except Exception as e:
-            raise ValueError(f"Ошибка чтения CSV/TSV: {e}")
-    else:
-        raise ValueError("Поддерживаются только форматы JSON, CSV, TSV.")
+def evaluate_ad(ad_text: str, target_audience: str) -> Dict[str, float]:
+    """
+    Базовая эвристическая оценка рекламы для одного сегмента.
+    Используется как "ядро", поверх которого накладывается поведение потребителей.
+    """
+    text_lower = ad_text.lower()
+    score = 0.5
 
+    if "скид" in text_lower:
+        score += 0.20
+    if "бесплатн" in text_lower:
+        score += 0.10
+    if "новин" in text_lower:
+        score += 0.05
+    if "доставка" in text_lower:
+        score += 0.05
+    if "хит" in text_lower or "бестселлер" in text_lower:
+        score += 0.05
 
-# ==========================
-# 4. СКОРИНГ ТОВАРОВ (Адаптировано из productAnalyzer.py для синхронной работы)
-# ==========================
+    length = len(ad_text)
+    if length < 80:
+        score -= 0.10
+    elif length > 600:
+        score -= 0.10
 
-# Инициализируем SentenceTransformer один раз
-@st.cache_resource(show_spinner=False)
-def get_semantic_model():
-    """Кэшированная загрузка SentenceTransformer."""
-    return SentenceTransformer('intfloat/multilingual-e5-base')
+    if "low_income" in target_audience.lower() and "скид" in text_lower:
+        score += 0.05
 
+    click_probability = max(0.0, min(1.0, score))
+    purchase_probability = max(0.0, min(1.0, score - 0.1))
 
-# Инициализируем эмбеддинги для скоринга
-def get_scoring_embeddings(model):
-    """Возвращает кэшированные эмбеддинги для скоринга."""
     return {
-        'visual_pos': model.encode(
-            ["query: яркий красочный насыщенный неоновый броский дизайн визуально привлекательный"],
-            convert_to_tensor=True),
-        'visual_neg': model.encode(["query: тусклый серый блеклый простой стандартный обычный скучный матовый"],
-                                     convert_to_tensor=True),
-        'novelty_pos': model.encode(["query: новинка новый релиз последняя модель 2024 современный инновация тренд"],
-                                     convert_to_tensor=True),
-        'novelty_neg': model.encode(["query: старый антиквариат устаревший ретро винтаж прошлый век история"],
-                                     convert_to_tensor=True),
-        'hype_pos': model.encode(["query: бестселлер хит продаж топ популярный выбор покупателей высокий рейтинг"],
-                                     convert_to_tensor=True),
-        'hype_neg': model.encode(["query: средний неизвестный нишевый базовый запасная часть обыденный"],
-                                     convert_to_tensor=True),
+        "click_probability": click_probability,
+        "purchase_probability": purchase_probability,
     }
 
 
-MODEL = get_semantic_model()
-EMBEDDINGS = get_scoring_embeddings(MODEL)
-
-
-def _get_semantic_score(embedding: Any, pos: Any, neg: Any) -> float:
-    """Вычисляет семантический счет на основе разницы косинусного сходства."""
-    # (cos(emb, pos) - cos(emb, neg)) * 100
-    score = (util.cos_sim(embedding, pos).item() - util.cos_sim(embedding, neg).item()) * 100
-    return max(0, score + 5)
-
-
-def select_top_products(catalog: List[Dict[str, Any]], k: int = 3) -> List[Product]:
+def simulate_ad_for_consumer(
+    ad_text: str,
+    product: Dict[str, Any],
+    consumer: Dict[str, Any]
+) -> Dict[str, float]:
     """
-    Выбирает топ-K товаров на основе комплексного скоринга.
+    Моделирует реакцию одного ИИ-потребителя на объявление,
+    используя базовый скор + поправки на интересы и поведение.
     """
-    processed = []
+    base_scores = evaluate_ad(ad_text, consumer["segment"])
+    score = base_scores["click_probability"]
+    purchase = base_scores["purchase_probability"]
 
-    for p in catalog:
-        # 1. Семантический скоринг (заменяет старый скоринг по тегам)
-        desc_emb = MODEL.encode(f"passage: {p['name']}. {p.get('description', '')}", convert_to_tensor=True)
+    text_lower = ad_text.lower()
+    product_text = (
+        str(product.get("name", "")) + " " +
+        str(product.get("description", "")) + " " +
+        str(product.get("category", ""))
+    ).lower()
 
-        m_score = (
-                             _get_semantic_score(desc_emb, EMBEDDINGS['visual_pos'], EMBEDDINGS['visual_neg']) +
-                             _get_semantic_score(desc_emb, EMBEDDINGS['novelty_pos'], EMBEDDINGS['novelty_neg']) +
-                             _get_semantic_score(desc_emb, EMBEDDINGS['hype_pos'], EMBEDDINGS['hype_neg'])
-                    ) / 3
+    interests = " ".join(consumer.get("interests", [])).lower()
+    behavior = " ".join(consumer.get("behavior", [])).lower()
+    price_sens = consumer.get("price_sensitivity", 0.7)
 
-        # 2. Маржинальность
-        margin = 0
-        if p.get('price', 0) > 0 and 'market_cost' in p:
-            margin = ((p['price'] - p['market_cost']) / p['price']) * 100
+    if any(word in text_lower or word in product_text for word in interests.split()):
+        score += 0.05
+        purchase += 0.03
 
-        # 3. Trend (имитация или заглушка, т.к. нет Wordstat API)
-        trend_score = random.uniform(5.0, 15.0)
+    if "реагирует на скидки" in behavior and ("скид" in text_lower or "акция" in text_lower):
+        score += 0.08 * price_sens
+        purchase += 0.05 * price_sens
 
-        # Финальный взвешенный счет (аналогично формуле в productAnalyzer.py)
-        final_score = (m_score * 1.5) + (margin * 0.4) + trend_score
+    if "любит новинки" in behavior and "новин" in text_lower:
+        score += 0.05
+        purchase += 0.03
 
-        processed.append({
-            **p,
-            "_score_final": final_score,
-            "recommendation": (
-                f"Скор привлекательности/новизны: {m_score:.1f}. "
-                f"Маржинальность: {int(margin)}%. "
-                f"Общий скор (демо): {final_score:.1f}."
-            )
-        })
+    if "доверяет отзывам" in behavior and any(
+        k in text_lower for k in ["выбор покупателей", "отзывы", "рейтинг"]
+    ):
+        score += 0.04
+        purchase += 0.03
 
-    top_raw = sorted(processed, key=lambda x: x['_score_final'], reverse=True)[:k]
+    score += random.uniform(-0.02, 0.02)
+    purchase += random.uniform(-0.02, 0.02)
 
-    # Преобразование в объекты Product
-    return [
-        Product(
-            name=p['name'],
-            category=p.get('category', 'N/A'),
-            price=p.get('price', 0.0),
-            margin=p.get('margin'),
-            tags=p.get('tags'),
-            description=p.get('description', ''),
-            recommendation=p['recommendation'],  # Добавляем результат анализа
-        )
-        for p in top_raw
-    ]
+    click_probability = max(0.0, min(1.0, score))
+    purchase_probability = max(0.0, min(1.0, purchase))
+
+    return {
+        "click_probability": click_probability,
+        "purchase_probability": purchase_probability,
+    }
+
+
+def evaluate_ad_on_audience(
+    ad_text: str,
+    product: Dict[str, Any],
+    consumers: List[Dict[str, Any]]
+) -> Dict[str, float]:
+    """
+    Прогоняет объявление по всем ИИ-потребителям и усредняет результат.
+    """
+    clicks = []
+    purchases = []
+    for c in consumers:
+        scores = simulate_ad_for_consumer(ad_text, product, c)
+        clicks.append(scores["click_probability"])
+        purchases.append(scores["purchase_probability"])
+
+    return {
+        "click_probability": sum(clicks) / len(clicks),
+        "purchase_probability": sum(purchases) / len(purchases),
+    }
 
 
 # ==========================
-# 5. ГЕНЕРАЦИЯ АУДИТОРИИ (НУЖНО ДОБАВИТЬ КОД, КОТОРЫЙ ВЫ НЕ ПРИСЛАЛИ)
+# 3. LLM-КЛИЕНТ ДЛЯ MISTRAL
 # ==========================
 
-# !!! ВАЖНО: Функции generate_synthetic_consumers и др. должны быть здесь.
-# Так как вы не прислали их код, я оставляю заглушки, чтобы избежать ImportError.
-
-def generate_synthetic_consumers() -> List[ConsumerProfile]:
-    """Заглушка для функции генерации аудитории."""
-    # Замените это на ваш реальный код
-    return [
-        ConsumerProfile(
-            id="C1",
-            age_range="25-35",
-            interests=["технологии", "спорт"],
-            behavior=["часто покупает онлайн"],
-            segment_label="Ранний последователь"
-        )
-    ]
-
-# ... другие функции (evaluate_ad_for_profile, build_scored_ads_for_product, build_campaign_json) ...
-
-# ==========================
-# 6. КЛИЕНТ LLM
-# ==========================
-
-def get_llm_client():
+def get_llm_client(use_mistral: bool = True):
     """
-    Если есть MISTRAL_API_KEY — используем реальный Mistral LLM.
-    Иначе — Mock для оффлайн-демо.
+    Возвращает либо реальный MistralClient, либо MockLLMClient.
+    В приложении Streamlit по умолчанию используется Mistral.
     """
-    try:
-        # Проверяем наличие ключа для Mistral
-        if os.getenv("MISTRAL_API_KEY"):
-            return MistralClient()
+    if use_mistral:
+        return MistralClient()
+    return MockLLMClient()
+
+
+def _advariant_to_dict(v: AdVariant, channel: str) -> Dict[str, str]:
+    return {
+        "channel": v.channel or channel,
+        "headline": v.headline,
+        "text": v.text,
+        "cta": v.cta,
+        "notes": v.notes,
+    }
+
+
+def generate_variants_for_product_channel(
+    llm_client,
+    product: Dict[str, Any],
+    channel: str,
+    trends: List[str],
+    n_variants: int = 3,
+) -> List[Dict[str, str]]:
+    """
+    Вызывает Mistral (или Mock) для генерации n_variants креативов под один канал.
+    """
+    payload = {
+        "product": {
+            "name": product.get("name"),
+            "category": product.get("category", "электроника"),
+            "price": product.get("price"),
+            "margin": product.get("margin"),
+            "tags": product.get("tags") or [],
+            "features": [
+                product.get("description", ""),
+                product.get("recommendation", ""),
+            ],
+        },
+        "audience_profile": {
+            "age_range": "20-35",
+            "interests": ["гаджеты", "онлайн-покупки", "скидки"],
+            "behavior": ["реагирует на скидки", "ценит удобство", "ищет выгоду"],
+        },
+        "channel": channel,
+        "trends": trends,
+        "n_variants": n_variants,
+    }
+
+    variants_objs = llm_client.generate_variants(payload)
+    variants: List[Dict[str, str]] = []
+    for v in variants_objs:
+        if isinstance(v, AdVariant):
+            variants.append(_advariant_to_dict(v, channel))
         else:
-            raise ValueError("MISTRAL_API_KEY не задан.")
-    except Exception as e:
-        print(f"Ошибка инициализации MistralClient: {e}. Используется MockLLMClient.")
-        return MockLLMClient()
+            variants.append(
+                {
+                    "channel": v.get("channel", channel),
+                    "headline": v.get("headline", ""),
+                    "text": v.get("text", ""),
+                    "cta": v.get("cta", ""),
+                    "notes": v.get("notes", ""),
+                }
+            )
+    return variants
 
 
 # ==========================
-# 7. ДРУГИЕ ФУНКЦИИ (ЗАГЛУШКИ)
+# 4. ПОСТРОЕНИЕ И ОЦЕНКА ОБЪЯВЛЕНИЙ
 # ==========================
 
-# Если у вас есть другие функции, которые импортируются в app.py (например, build_campaign_json),
-# вы должны убедиться, что они определены здесь.
+def build_scored_ads_for_product(
+    llm_client,
+    product: Dict[str, Any],
+    trends: List[str],
+    consumers: List[Dict[str, Any]],
+    n_variants_per_channel: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Для одного товара:
+    - генерирует несколько вариантов на каждый из трёх каналов через Mistral
+    - прогоняет через ИИ-потребителей
+    - возвращает все объявления с оценками
+    """
+    channels = ["telegram", "vk", "yandex_ads"]
+    all_ads: List[Dict[str, Any]] = []
 
-def evaluate_ad_for_profile(ad_variant: AdVariant, profile: ConsumerProfile) -> Tuple[float, float]:
-    """Заглушка: имитация оценки вероятности клика и покупки."""
-    # Замените на вашу реальную логику
-    base_click = 0.05
-    base_purchase = 0.01
-
-    if "новизна" in ad_variant.ad_text:
-        base_click += 0.02
-    if profile.age_range == "25-35":
-        base_purchase += 0.01
-
-    return base_click, base_purchase
-
-def build_scored_ads_for_product(product: Product) -> List[ScoredAd]:
-    """Заглушка: генерирует оцененные варианты объявлений."""
-    # Здесь должен быть вызов LLM для генерации вариантов, а затем их оценка.
-    # Для целей исправления ошибки импорта, просто возвращаем заглушку.
-    mock_variant = AdVariant(
-        title="Демо-Заголовок",
-        body="Демо-Текст объявления.",
-        keywords=["демо", product.name]
-    )
-    click, purchase = evaluate_ad_for_profile(mock_variant, generate_synthetic_consumers()[0])
-
-    return [
-        ScoredAd(
+    for ch in channels:
+        variants = generate_variants_for_product_channel(
+            llm_client=llm_client,
             product=product,
-            channel="social_media",
-            variant=mock_variant,
-            avg_click_probability=click,
-            avg_purchase_probability=purchase
+            channel=ch,
+            trends=trends,
+            n_variants=n_variants_per_channel,
         )
-    ]
 
-def pick_best_per_channel(scored_ads: List[ScoredAd]) -> Dict[str, ScoredAd]:
-    """Заглушка: выбирает лучшее объявление для каждого канала."""
-    best = {}
-    for ad in scored_ads:
-        if ad.channel not in best or ad.avg_purchase_probability > best[ad.channel].avg_purchase_probability:
-            best[ad.channel] = ad
+        for v in variants:
+            ad_text = f"{v['headline']}\n{v['text']}\n{v['cta']}"
+            scores = evaluate_ad_on_audience(ad_text, product, consumers)
+
+            all_ads.append(
+                {
+                    "product": {
+                        "name": product.get("name", ""),
+                        "category": product.get("category", ""),
+                        "price": product.get("price"),
+                    },
+                    "channel": ch,
+                    "ad": v,
+                    "evaluation": scores,
+                }
+            )
+
+    return all_ads
+
+
+def pick_best_per_channel(
+    scored_ads: List[Dict[str, Any]]
+) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """
+    Для каждой пары (товар, канал) оставляет объявление с максимальной click_probability.
+    """
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    for item in scored_ads:
+        key = (item["product"]["name"], item["channel"])
+        current = best.get(key)
+        if (
+            current is None
+            or item["evaluation"]["click_probability"]
+            > current["evaluation"]["click_probability"]
+        ):
+            best[key] = item
+
     return best
 
-def build_campaign_json(best_ads: Dict[str, ScoredAd]) -> Dict[str, Any]:
-    """Заглушка: создает финальный JSON кампании."""
-    return {
-        "campaign_name": "Demo_Campaign",
-        "best_ads": {
-            channel: {
-                "product_name": ad.product.name,
-                "ad_title": ad.variant.title,
-                "ad_body": ad.variant.body,
-                "score": f"{ad.avg_purchase_probability:.4f}"
+
+def build_campaign_json(
+    best_items: List[Dict[str, Any]],
+    consumers: List[Dict[str, Any]],
+    niche: str,
+    catalog_size: int,
+    total_ads_generated: int,
+) -> Dict[str, Any]:
+    """
+    Собирает финальный JSON кампании (совместим с форматом из ТЗ).
+    """
+    campaigns = []
+    for item in best_items:
+        campaigns.append(
+            {
+                "product": item["product"],
+                "channel": item["channel"],
+                "ad": item["ad"],
+                "evaluation": item["evaluation"],
+                "targeting": {
+                    "audience_segment": "Synthetic_multi_segment",
+                    "n_consumers": len(consumers),
+                },
+                "image_recommendation": {
+                    "status": "placeholder",
+                    "description": "Рекомендовано светлое фото товара крупным планом на нейтральном фоне.",
+                },
             }
-            for channel, ad in best_ads.items()
-        }
+        )
+
+    return {
+        "platform": "GENAI-4",
+        "description": "Полный список сгенерированных и протестированных рекламных креативов по топ-товарам.",
+        "niche": niche,
+        "n_products_in_catalog": catalog_size,
+        "n_top_products_used": len({c["product"]["name"] for c in campaigns}),
+        "n_all_ads_generated": total_ads_generated,
+        "n_best_ads_in_campaign": len(campaigns),
+        "campaigns": campaigns,
     }
