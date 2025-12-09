@@ -70,3 +70,11 @@ project_creative/
 ├── requirements.txt
 └── README.md
 ```
+## Установка
+```
+git clone https://github.com/dext01/project_creative.git
+cd project_creative
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
