@@ -1,35 +1,19 @@
-# promt.py
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
 import json
 import os
+import re
+from dataclasses import dataclass
+from typing import List, Dict, Any
 
-import requests
-import random
-import time
-
-
-# ==========================
-# 1. МОДЕЛИ ДАННЫХ
-# ==========================
-
-@dataclass
-class AdVariant:
-    channel: str
-    headline: str
-    text: str
-    cta: str
-    notes: Optional[str] = None
-
+import httpx
 
 # ==========================
-# 2. SYSTEM PROMPT (Общий)
+# 1. SYSTEM PROMPT
 # ==========================
 
 SYSTEM_PROMPT = """
 Ты — модуль генерации рекламных креативов для ИИ-платформы GENAI-4.
-Твоя задача — создавать эффективные рекламные тексты для интернет-магазина электроники, адаптированные под разные каналы (Telegram, VK, Yandex Ads).
+Твоя задача — создавать эффективные рекламные тексты для интернет-магазина электроники,
+адаптированные под разные каналы (Telegram, VK, Yandex Ads).
 Сосредоточься на конверсии (кликах и покупках). Не используй лишнего текста, только то, что помогает продавать.
 
 =====================
@@ -52,250 +36,238 @@ SYSTEM_PROMPT = """
 ВХОДНЫЕ ДАННЫЕ
 =====================
 Ты получаешь JSON следующего вида:
-{
-  "product": {
-    "name": "Название товара",
-    "category": "Категория",
-    "price": 12345,
-    "tags": ["новинка", "яркий"],
-    "features": ["Характеристика 1", "Характеристика 2"],
-    "recommendation": "Краткое summary от анализатора"
-  },
-  "audience_profile": {
-    "age_range": "18-30",
-    "interests": ["Технологии"],
-    "behavior": ["Реагирует на скидки"]
-  },
-  "channel": "telegram" | "vk" | "yandex_ads",
-  "n_variants": 3
-}
+- product:
+    - name — название
+    - category — категория товара
+    - price — цена
+    - margin — маржа
+    - tags — теги
+    - features — характеристики / описание
+- audience_profile:
+    - age_range — возраст
+    - interests — интересы
+    - behavior — поведенческие особенности
+- channel — целевой канал ("telegram", "vk", "yandex_ads")
+- trends — активные маркетинговые тренды
+- n_variants — сколько вариантов рекламы нужно сгенерировать
 
 =====================
-ТРЕБОВАНИЯ КАНАЛОВ
+ШАБЛОНЫ ДЛЯ КАНАЛОВ
 =====================
-- **telegram**: Максимальная краткость (до 150 символов), активное использование эмодзи, создание ощущения срочности (FOMO). Фокус на одном ключевом преимуществе.
-- **vk**: Длинное, подробное описание (до 300-500 символов), социальное доказательство (популярность, отзывы), создание доверия и полноты информации.
-- **yandex_ads**: Заголовок (до 56 символов) и текст (до 81 символа). Сухо, по делу, только ключевые выгоды и характеристики, под поисковый запрос.
+
+------ TELEGRAM ------
+Короткий, эмоциональный формат.
+Правила:
+- Заголовок до ~50 символов.
+- Текст 1–3 предложения.
+- Можно использовать эмодзи, но ≤ 5 штук.
+- Мгновенная выгода в первых словах.
+- Допускаются эмоциональные формулировки.
+- CTA: "Успеть взять сейчас", "Смотреть в каталоге", "Перейти к покупке".
+
+Структура:
+headline: цепляющий 3–7 слов.
+text: короткое ясное описание + выгоды.
+cta: прямой призыв.
+notes: объяснение, почему креатив должен конвертировать.
+
+------ VK ------
+Более объемный текст: 2–5 предложений.
+Правила:
+- До 2 абзацев.
+- Можно легкий сторителлинг или «представьте…».
+- Желательно социальное доказательство (популярность, отзывы).
+- CTA: "Заказать онлайн", "Узнать цену", "Смотреть характеристики".
+
+Структура:
+headline: до ~70 символов.
+text: преимущества + мини-сценарий + доказательства.
+cta: CTA под российский рынок.
+notes: короткая причина эффективности.
+
+------ YANDEX ADS ------
+Строгий, информативный стиль.
+Правила:
+- Никаких эмодзи.
+- Максимальная конкретика.
+- Короткий заголовок: бренд/товар + выгода.
+- 1–2 предложения без воды.
+- Используй категории/ключевые слова (смартфон, наушники, доставка, скидка).
+- CTA: "Купить онлайн", "Заказать с доставкой", "Смотреть в магазине".
+
+Структура:
+headline: максимально ёмкая фраза.
+text: выгоды, быстрый смысл.
+cta: прямой, нейтральный.
+notes: причина высокой конверсии.
 
 =====================
-ФОРМАТ ВЫВОДА (ТОЛЬКО JSON)
+ФОРМАТ ВЫХОДА
 =====================
-Тебе необходимо сгенерировать n_variants (3) вариантов креатива.
+Ты обязан вернуть строго JSON:
 
 {
   "variants": [
     {
-      "channel": "telegram",
-      "headline": "Твой новый заголовок",
-      "text": "Текст с эмодзи",
-      "cta": "Призыв к действию",
-      "notes": "Краткий комментарий, почему этот креатив сработает."
-    },
-    // ... еще два таких объекта
+      "channel": "<канал>",
+      "headline": "<заголовок>",
+      "text": "<основной текст>",
+      "cta": "<призыв к действию>",
+      "notes": "<краткое объяснение логики>"
+    }
   ]
 }
+
+Количество вариантов = n_variants из входных данных.
+
+НЕ добавляй никаких комментариев вне JSON.
+НЕ изменяй структуру.
 """
 
 
 # ==========================
-# 3. MISTRAL API CLIENT
+# 2. DATA-MODEL
 # ==========================
 
-class MistralClient:
-    """Клиент реального Mistral API (chat.completions)."""
+@dataclass
+class AdVariant:
+    channel: str
+    headline: str
+    text: str
+    cta: str
+    notes: str = ""
 
-    def __init__(self, model: str = "mistral-large"):
+
+# ==========================
+# 3. MISTRAL CLIENT
+# ==========================
+
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+
+
+def _extract_json_from_content(content: str) -> Dict[str, Any]:
+    """
+    Пытается аккуратно вытащить JSON из произвольного текста LLM.
+    1) режем по ```json ... ``` если есть
+    2) если нет — берем подстроку от первой '{' до последней '}'
+    3) парсим json.loads
+    """
+    if not isinstance(content, str):
+        raise ValueError(f"Ожидалась строка с JSON, но пришло: {type(content)}")
+
+    # 1. Попробуем найти блок ```json ... ```
+    code_block = re.search(r"```json(.*?)```", content, flags=re.DOTALL | re.IGNORECASE)
+    if code_block:
+        candidate = code_block.group(1).strip()
+        return json.loads(candidate)
+
+    # 2. Если нет code-block, берем от первой { до последней }
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = content[start : end + 1].strip()
+        return json.loads(candidate)
+
+    # 3. Последняя попытка — может, это уже чистый JSON
+    return json.loads(content)
+
+
+class MistralClient:
+    """
+    Клиент для Mistral API.
+    Ожидает переменную окружения MISTRAL_API_KEY.
+    """
+
+    def __init__(self, model: str = "mistral-small-latest"):
         api_key = os.getenv("MISTRAL_API_KEY")
         if not api_key:
-            # Ошибка, если ключа нет, чтобы main.py мог переключиться на Mock
-            raise ValueError("MISTRAL_API_KEY не задан в переменных окружения.")
-
+            raise ValueError("MISTRAL_API_KEY не задан в переменных окружения!")
         self.api_key = api_key
         self.model = model
-        # Используем официальный эндпоинт Mistral
-        self.base_url = "https://api.mistral.ai/v1/chat/completions"
 
-    def _call_api(self, messages: List[Dict[str, str]], response_format: str = "json") -> Dict[str, Any]:
-        """Универсальный метод для вызова API Mistral."""
+    def generate_variants(self, payload: Dict[str, Any]) -> List[AdVariant]:
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            "temperature": 0.85,
+        }
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
         }
 
-        data = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.9,
-            "response_format": {"type": "json_object"} if response_format == "json" else None,
-        }
+        resp = httpx.post(MISTRAL_API_URL, headers=headers, json=body, timeout=40.0)
+        resp.raise_for_status()
+        data = resp.json()
 
-        if data['response_format'] is None:
-            del data['response_format']
+        content = data["choices"][0]["message"]["content"]
 
+        # --- вот тут был краш, теперь аккуратно вытаскиваем JSON ---
         try:
-            # Используем requests для синхронного вызова (стандартно для LLM-клиентов)
-            response = requests.post(self.base_url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()  # Вызывает HTTPError для ошибок 4xx/5xx
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            # Обработка ошибок API и сети
-            print(f"Mistral API Error: {e}")
-            raise ConnectionError(f"Ошибка при вызове Mistral API. Проверьте ключ и баланс. Детали: {e}")
-
-    def generate_variants(self, payload: Dict[str, Any]) -> List[AdVariant]:
-        """Генерирует N вариантов креатива, вызывая Mistral API."""
-        product = payload["product"]
-        channel = payload["channel"]
-        n_variants = payload.get("n_variants", 1)
-
-        input_data = {
-            "product": product,
-            "audience_profile": payload["audience_profile"],
-            "channel": channel,
-            "n_variants": n_variants,
-        }
-
-        # Собираем промпт, включая все входные данные
-        user_prompt = f"Сгенерируй {n_variants} вариантов рекламного креатива. Строго соблюдай SYSTEM_PROMPT. Входной JSON: {json.dumps(input_data, ensure_ascii=False, indent=2)}"
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        try:
-            raw_response = self._call_api(messages, response_format="json")
-        except (ConnectionError, ValueError) as e:
-            # На ошибке клиента или соединения — используем заглушку
-            print(f"Mistral API недоступен или ошибка: {e}. Переключение на Mock.")
-            return MockLLMClient().generate_variants(payload)
-
-        try:
-            # Парсинг ответа
-            raw_content = raw_response["choices"][0]["message"]["content"]
-            parsed_json = json.loads(raw_content)
-
-            variants_data = parsed_json.get("variants", [])
-
-            variants: List[AdVariant] = []
-            for v_data in variants_data:
-                # Создаем объекты AdVariant
-                variants.append(
-                    AdVariant(
-                        channel=v_data.get("channel", channel),
-                        headline=v_data.get("headline", "Заголовок от Mistral"),
-                        text=v_data.get("text", "Текст от Mistral"),
-                        cta=v_data.get("cta", "CTA"),
-                        notes=v_data.get("notes", "Сгенерировано Mistral"),
-                    )
-                )
-
-            # Если получили меньше, чем просили, заполняем заглушкой
-            if len(variants) < n_variants:
-                print(f"Mistral вернул {len(variants)} вариантов, но просили {n_variants}. Добавляем Mock.")
-                mock_variants = MockLLMClient().generate_variants(payload)
-                variants.extend(mock_variants)
-
-            return variants[:n_variants]
-
+            parsed = _extract_json_from_content(content)
         except Exception as e:
-            print(f"Критическая ошибка парсинга или ответа Mistral: {e}. Ответ: {raw_content[:200]}")
-            # На ошибке парсинга — возвращаем заглушку
-            return MockLLMClient().generate_variants(payload)
+            # чтобы легче отлаживать, выкидываем понятную ошибку
+            raise ValueError(
+                f"Не удалось распарсить JSON из ответа Mistral. "
+                f"Сырой контент:\n{content[:500]}\nОшибка: {e}"
+            ) from e
+
+        variants_raw = parsed.get("variants", [])
+        variants: List[AdVariant] = []
+        for v in variants_raw:
+            variants.append(
+                AdVariant(
+                    channel=v.get("channel", payload.get("channel", "")),
+                    headline=v.get("headline", ""),
+                    text=v.get("text", ""),
+                    cta=v.get("cta", ""),
+                    notes=v.get("notes", ""),
+                )
+            )
+        return variants
 
 
 # ==========================
-# 4. MOCK (ЗАГЛУШКА) CLIENT
+# 4. MOCK ДЛЯ ОТЛАДКИ
 # ==========================
 
 class MockLLMClient:
-    """Заглушка для LLM-клиента (используется, если API недоступен)."""
-
-    def __init__(self, model: str = "mock-model"):
-        self.model = model
+    """
+    Заглушка вместо Mistral — для отладки без API.
+    """
 
     def generate_variants(self, payload: Dict[str, Any]) -> List[AdVariant]:
-        """Генерирует N вариантов, используя простые шаблоны."""
-        product = payload["product"]
+        p = payload["product"]
         channel = payload["channel"]
-        name = product.get("name", "Товар")
-        features = product.get("features") or []
-        features_text = ", ".join([f for f in features if f]) or "отличные характеристики"
+        name = p.get("name", "товар")
+        desc = p.get("features", [""])[0] if p.get("features") else ""
 
         if channel == "telegram":
-            base = AdVariant(
-                channel="telegram",
-                headline=f"🔥 {name} — забери, пока есть!",
-                text=f"Наш {name} с {features_text}. Это новинка, которую все ждут. Успей, пока цена ещё держится! 🚀",
-                cta="Успеть взять сейчас →",
-                notes="Mock: кратко, эмоции, FOMO.",
-            )
+            headline = f"{name} — забери, пока есть"
+            text = f"{name}. {desc} Успей, пока цена ещё держится 🔥"
+            cta = "Успеть взять сейчас"
         elif channel == "vk":
-            base = AdVariant(
-                channel="vk",
-                headline=f"{name}: Техника, которая радует каждый день | Отзывы 4.9/5",
-                text=(f"{name} — выбор тех, кто ценит комфорт и качество. "
-                      f"Особенности: {features_text}. Посмотрите, что говорят другие покупатели! Многие уже оценили этот вариант."),
-                cta="Заказать онлайн и получить скидку",
-                notes="Mock: длиннее текст, соцдоказательство.",
+            headline = f"{name}: техника, которая радует каждый день"
+            text = (
+                f"{name} — для тех, кто ценит качество и комфорт. {desc} "
+                f"Уже выбирают десятки покупателей, заказывайте онлайн."
             )
+            cta = "Заказать онлайн"
         else:
-            base = AdVariant(
-                channel="yandex_ads",
-                headline=f"Выгодная Цена на {name} — Спешите!",
-                text=f"{name} с {features_text}. Быстрая доставка по РФ. Гарантия 1 год. Заказать онлайн.",
-                cta="Купить онлайн",
-                notes="Mock: сухо, по делу, под поиск.",
+            headline = f"{name} со скидкой"
+            text = f"{name}. {desc} Цена по акции, быстрая доставка."
+            cta = "Купить онлайн"
+
+        return [
+            AdVariant(
+                channel=channel,
+                headline=headline,
+                text=text,
+                cta=cta,
+                notes="Сгенерировано MockLLMClient для отладки.",
             )
-
-        n = payload.get("n_variants", 1)
-        # Возвращаем N копий базового варианта
-        return [AdVariant(
-            channel=base.channel,
-            headline=f"{base.headline} (Вариант {i + 1})",
-            text=base.text,
-            cta=base.cta,
-            notes=base.notes,
-        ) for i in range(n)]
-
-
-# ==========================
-# 5. ФОРМАТИРОВАНИЕ ДЛЯ ВЫВОДА
-# ==========================
-
-def format_variant_for_channel(variant: AdVariant) -> str:
-    """Форматирует креатив для удобного чтения."""
-    ch = variant.channel.lower()
-    if ch == "telegram":
-        return (
-            f"Telegram\n\n"
-            f"{variant.headline}\n"
-            f"{variant.text}\n"
-            f"⬇️ {variant.cta}\n"
-        )
-    elif ch == "vk":
-        return (
-            f"VK\n\n"
-            f"Заголовок: {variant.headline}\n"
-            f"Текст:\n{variant.text}\n"
-            f"[Кнопка: {variant.cta}]\n"
-        )
-    elif ch == "yandex_ads":
-        return (
-            f"Yandex Ads\n\n"
-            f"Заголовок: {variant.headline}\n"
-            f"Текст: {variant.text}\n"
-            f"[CTA: {variant.cta}]\n"
-        )
-    else:
-        return (
-            f"{variant.channel}\n\n"
-            f"{variant.headline}\n"
-            f"{variant.text}\n"
-            f"{variant.cta}\n"
-        )
-
-
-def format_all_variants_human_readable(variants: List[AdVariant]) -> List[str]:
-    return [format_variant_for_channel(v) for v in variants]
+        ]
