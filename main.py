@@ -4,11 +4,14 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 import math
 import random
+import os  # Обязательно для чтения переменных окружения
 
 import pandas as pd
-import streamlit as st  # <--- ДОБАВИТЬ ЭТУ СТРОКУ!
+import streamlit as st  # <--- ДОБАВЛЕНО/ИСПРАВЛЕНО
+from sentence_transformers import SentenceTransformer, util # <--- ДОБАВЛЕНО/ИСПРАВЛЕНО
 
-from promt import MistralClient, MockLLMClient, AdVariant 
+# Убедитесь, что вы импортируете MistralClient, а не старый LLMClient
+from promt import MistralClient, MockLLMClient, AdVariant
 
 # ==========================
 # 1. МОДЕЛИ ДАННЫХ
