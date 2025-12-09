@@ -1,19 +1,19 @@
 import json
-from typing import List
+from typing import List, Dict, Any # <-- ИСПРАВЛЕНО: Добавлены Dict и Any
 
 import streamlit as st
 import pandas as pd
-from sentence_transformers import util # Добавлен для совместимости с main.py
-import os # Добавлен для проверки ключа
+from sentence_transformers import util
+import os
 
 from main import (
     load_catalog_from_filelike,
-    select_top_products, # Теперь использует семантический скоринг из main.py
+    select_top_products,
     generate_synthetic_consumers,
     build_scored_ads_for_product,
     pick_best_per_channel,
     build_campaign_json,
-    get_llm_client, # Теперь возвращает MistralClient
+    get_llm_client,
 )
 
 
