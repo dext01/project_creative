@@ -113,3 +113,18 @@ python -m venv .venv
 # Для Mac/Linux:
 source .venv/bin/activate
 ```
+### 3. Зависимости
+```bash
+
+pip install -r requirements.txt
+```
+### 4. Настройка ключей
+
+## Для полноценной работы (не в режиме Mock) нужен ключ от Mistral AI:
+```bash
+
+# Mac/Linux
+export MISTRAL_API_KEY="ваш_ключ_mistral"
+# Windows (PowerShell)
+$env:MISTRAL_API_KEY="ваш_ключ_mistral"
+```
