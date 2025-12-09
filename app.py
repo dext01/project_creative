@@ -1,10 +1,8 @@
 import json
-from typing import List, Dict, Any # <-- ИСПРАВЛЕНО: Добавлены Dict и Any
+from typing import List, Dict, Any
 
 import streamlit as st
 import pandas as pd
-from sentence_transformers import util
-import os
 
 from main import (
     load_catalog_from_filelike,
@@ -16,10 +14,13 @@ from main import (
     get_llm_client,
 )
 
+# ==========================
+# 0. НАСТРОЙКА СТРАНИЦЫ + CSS
+# ==========================
 
 st.set_page_config(
     page_title="GENAI-4 · Автогенерация рекламы",
-    layout="wide"
+    layout="wide",
 )
 
 st.markdown(
@@ -54,7 +55,7 @@ st.markdown(
         font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: .08em;
+        letter-spacing: .16em;
         background: rgba(56,189,248,0.1);
         color: #38bdf8;
         border: 1px solid rgba(56,189,248,0.4);
@@ -115,18 +116,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-def load_catalog(file) -> List[Dict[str, Any]]:
-    name = file.name.lower()
-    if name.endswith(".json"):
-        data = json.load(file)
-        if isinstance(data, dict) and "products" in data:
-            data = data["products"]
-        return data
-    else:
-        df = pd.read_csv(file)
-        return df.to_dict(orient="records")
-
+# ==========================
+# 1. ШАПКА
+# ==========================
 
 st.markdown(
     """
@@ -139,26 +131,30 @@ st.markdown(
       </div>
       <div class="section-sub">
         Загрузите каталог товаров в JSON/CSV — система выберет лучшие позиции, сгенерирует креативы под Telegram, VK и Yandex Ads,
-        прогонит их через симулированную аудиторию и покажет объявления с наивысшей прогнозируемой конверсией.
+        прогонит их через синтетическую аудиторию и покажет объявления с наивысшей прогнозируемой конверсией.
       </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+# ==========================
+# 2. САЙДБАР
+# ==========================
 
 st.sidebar.header("Входные параметры")
 
 use_real_mistral = st.sidebar.checkbox(
     "Использовать Mistral API (иначе заглушка)",
     value=True,
-    help="Если ключ MISTRAL_API_KEY не настроен, включение вызовет ошибку.",
+    help="Для работы нужен ключ MISTRAL_API_KEY в переменных окружения или secrets.",
 )
 
 niche = st.sidebar.text_input("Ниша / тип товаров", value="электроника")
+
 trends_input = st.sidebar.text_input(
     "Активные маркетинговые тренды (через запятую)",
-    value="минимализм, честность, FOMO, социальное доказательство"
+    value="минимализм, честность, FOMO, социальное доказательство",
 )
 trends = [t.strip() for t in trends_input.split(",") if t.strip()]
 
@@ -171,26 +167,43 @@ reruns = st.sidebar.slider(
 
 uploaded_file = st.sidebar.file_uploader(
     "Каталог товаров (JSON или CSV)",
-    type=["json", "csv"]
+    type=["json", "csv"],
 )
 
 if not uploaded_file:
     st.info("⬅ Загрузите JSON/CSV с каталогом товаров, чтобы сгенерировать кампании.")
     st.stop()
 
-catalog = load_catalog(uploaded_file)
+# ==========================
+# 3. ЗАГРУЗКА КАТАЛОГА И ВЫБОР ТОВАРОВ
+# ==========================
+
+catalog = load_catalog_from_filelike(uploaded_file)
 if not catalog:
     st.error("Не удалось прочитать каталог.")
     st.stop()
 
 top_products = select_top_products(catalog, k=3)
 
-if use_real_mistral:
-    llm_client = MistralClient()
-else:
-    llm_client = MockLLMClient()
+# ==========================
+# 4. LLM-КЛИЕНТ (MISTRAL ИЛИ MOCK)
+# ==========================
+
+try:
+    llm_client = get_llm_client(use_mistral=use_real_mistral)
+except Exception as e:
+    st.error(f"Ошибка инициализации LLM-клиента: {e}")
+    st.stop()
+
+# ==========================
+# 5. СИНТЕТИЧЕСКАЯ АУДИТОРИЯ
+# ==========================
 
 consumers = generate_synthetic_consumers(12)
+
+# ==========================
+# 6. ГЕНЕРАЦИЯ И ТЕСТИРОВАНИЕ ОБЪЯВЛЕНИЙ
+# ==========================
 
 all_scored_ads: List[Dict[str, Any]] = []
 
@@ -205,57 +218,41 @@ for product in top_products:
     all_scored_ads.extend(scored_for_product)
 
 if not all_scored_ads:
-    st.error("Не удалось сгенерировать объявления.")
+    st.error("Не удалось сгенерировать объявления (LLM вернул пустой результат).")
     st.stop()
 
-best_per_product_channel: Dict[tuple, Dict[str, Any]] = {}
-for item in all_scored_ads:
-    key = (item["product"]["name"], item["channel"])
-    current_best = best_per_product_channel.get(key)
-    if current_best is None or item["evaluation"]["click_probability"] > current_best["evaluation"]["click_probability"]:
-        best_per_product_channel[key] = item
+best_per_product_channel = pick_best_per_channel(all_scored_ads)
 
+# 2 лучших объявления по кликабельности — для примера в UI
 best_two = sorted(
     all_scored_ads,
     key=lambda x: x["evaluation"]["click_probability"],
-    reverse=True
+    reverse=True,
 )[:2]
 
-campaigns_all = []
-for item in best_per_product_channel.values():
-    campaigns_all.append({
-        "product": item["product"],
-        "channel": item["channel"],
-        "ad": item["ad"],
-        "evaluation": item["evaluation"],
-        "targeting": {
-            "audience_segment": "Synthetic_multi_segment",
-            "n_consumers": len(consumers),
-        },
-        "image_recommendation": {
-            "status": "placeholder",
-            "description": "Рекомендовано светлое фото товара крупным планом на нейтральном фоне."
-        }
-    })
+# ==========================
+# 7. ФИНАЛЬНЫЙ JSON КАМПАНИИ
+# ==========================
 
-final_json = {
-    "platform": "GENAI-4",
-    "description": "Полный список сгенерированных и протестированных рекламных креативов по топ-товарам.",
-    "niche": niche,
-    "n_products_in_catalog": len(catalog),
-    "n_top_products_used": len(top_products),
-    "n_all_ads_generated": len(all_scored_ads),
-    "n_best_ads_in_campaign": len(campaigns_all),
-    "campaigns": campaigns_all,
-}
+campaign_json = build_campaign_json(
+    best_items=list(best_per_product_channel.values()),
+    consumers=consumers,
+    niche=niche,
+    catalog_size=len(catalog),
+    total_ads_generated=len(all_scored_ads),
+)
+
+# ==========================
+# 8. SUMMARY БЛОК
+# ==========================
 
 st.markdown(
     f"""
     <div class="top-summary">
       <span class="badge">ГОТОВО</span>
-      На основе <strong>{final_json['n_products_in_catalog']}</strong> товаров выбрано 
-      <strong>{final_json['n_top_products_used']}</strong> перспективных позиций. Для них сгенерировано 
-      и протестировано <strong>{final_json['n_all_ads_generated']}</strong> объявлений
+      На основе <strong>{campaign_json['n_products_in_catalog']}</strong> товаров выбрано 
+      <strong>{campaign_json['n_top_products_used']}</strong> перспективных позиций. Для них сгенерировано 
+      и протестировано <strong>{campaign_json['n_all_ads_generated']}</strong> объявлений
       на синтетической аудитории из <strong>{len(consumers)}</strong> профилей.
       В кампанию вошли лучшие креативы по каждому каналу.
     </div>
@@ -263,10 +260,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ==========================
+# 9. ПРИМЕРЫ КРЕАТИВОВ
+# ==========================
+
 channel_labels = {
     "telegram": "Telegram",
     "vk": "VK",
-    "yandex_ads": "Yandex Ads"
+    "yandex_ads": "Yandex Ads",
 }
 
 st.markdown("### ⭐ Примеры креативов (2 объявления с максимальной прогнозируемой кликабельностью)")
@@ -300,16 +301,22 @@ for item in best_two:
         unsafe_allow_html=True,
     )
 
+# ==========================
+# 10. ВИЗУАЛИЗАЦИЯ РЕЗУЛЬТАТОВ
+# ==========================
+
 st.markdown("### 📊 Визуализация результатов тестирования")
 
 viz_rows = []
 for item in best_per_product_channel.values():
-    viz_rows.append({
-        "Товар": item["product"]["name"],
-        "Канал": channel_labels.get(item["channel"], item["channel"]),
-        "Прогноз клика (%)": item["evaluation"]["click_probability"] * 100,
-        "Прогноз покупки (%)": item["evaluation"]["purchase_probability"] * 100,
-    })
+    viz_rows.append(
+        {
+            "Товар": item["product"]["name"],
+            "Канал": channel_labels.get(item["channel"], item["channel"]),
+            "Прогноз клика (%)": item["evaluation"]["click_probability"] * 100,
+            "Прогноз покупки (%)": item["evaluation"]["purchase_probability"] * 100,
+        }
+    )
 
 viz_df = pd.DataFrame(viz_rows)
 
@@ -325,14 +332,18 @@ with col2:
         use_container_width=True,
     )
 
-st.markdown("### 🧾 Полный JSON со всеми креативами кампании")
-st.caption("Этот JSON включает лучшие креативы по каждому товару и каналу, с оценкой клика и покупки.")
+# ==========================
+# 11. ПОЛНЫЙ JSON + СКАЧИВАНИЕ
+# ==========================
 
-st.json(final_json)
+st.markdown("### 🧾 Полный JSON со всеми креативами кампании")
+st.caption("JSON включает лучшие креативы по каждому товару и каналу, с оценкой клика и покупки, но без генерации картинок (только текст + рекомендация по изображению).")
+
+st.json(campaign_json)
 
 st.download_button(
     label="📥 Скачать JSON кампании",
     file_name="genai4_final_campaign.json",
     mime="application/json",
-    data=json.dumps(final_json, ensure_ascii=False, indent=4),
+    data=json.dumps(campaign_json, ensure_ascii=False, indent=4),
 )
